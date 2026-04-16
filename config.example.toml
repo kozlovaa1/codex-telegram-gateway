@@ -1,37 +1,72 @@
+# Human-readable bot name used in messages and diagnostics.
 bot_name = "Codex Gateway"
+
+# Telegram Bot API endpoint. Keep the default unless you proxy Telegram traffic.
 telegram_api_base = "https://api.telegram.org"
+
+# Long polling settings.
 poll_timeout_seconds = 25
 poll_retry_delay_seconds = 3
+
+# Telegram output tuning.
 telegram_message_chunk = 3900
 stream_edit_interval_seconds = 2.0
+
+# Reserved for future HTTP status/health integrations.
 status_port = 8085
+
+# Runtime state locations. The service user must be able to write here.
 sqlite_path = "/var/lib/codex-telegram-gateway/gateway.sqlite3"
 runtime_dir = "/var/lib/codex-telegram-gateway"
 log_dir = "/var/log/codex-telegram-gateway"
-codex_bin = "/home/deploy/.npm-global/bin/codex"
-codex_auth_source_home = "/home/deploy/.codex"
+
+# Absolute path to the Codex CLI binary visible to the service user.
+codex_bin = "/home/service-user/.npm-global/bin/codex"
+
+# Path to the existing Codex profile used for auth fallback when OPENAI_API_KEY is not set.
+# The service only copies auth.json from here into its isolated runtime home.
+codex_auth_source_home = "/home/service-user/.codex"
+
+# Workspace to use automatically for unbound chats/topics.
+# Leave empty to require explicit /use or /bind before normal prompts work.
 default_workspace_name = "server-ops"
+
+# Optional model override. Leave empty to use the Codex CLI default/profile.
 default_model = ""
+
+# Safe-by-default execution settings.
 default_sandbox_mode = "workspace-write"
 default_approval_policy = "never"
+
+# Session/process lifecycle.
 session_idle_ttl_seconds = 21600
 command_timeout_seconds = 1800
 process_kill_grace_seconds = 8
 max_parallel_processes = 2
 max_queue_per_workspace = 8
 max_active_workspaces = 16
+
+# Basic anti-flood limits per Telegram user.
 per_user_rate_limit_window_seconds = 20
 per_user_rate_limit_max_messages = 6
+
+# Keep /bind restricted to Telegram admin ids from .env.
 trusted_admin_only_bind = true
+
+# Only these root paths may be used for workspace binding.
 allowed_roots = ["/srv/infra", "/srv/openclaw", "/srv/projects"]
+
+# Top-level directories under these roots are exposed as project:<name> aliases in /workspaces.
 project_alias_roots = ["/srv/projects"]
 
 [workspace_defaults]
+# Static workspace aliases available from startup.
 infra = "/srv/infra"
 openclaw = "/srv/openclaw"
 server-ops = "/srv/projects"
 
 [telegram]
+# Chat types accepted by the bot.
 allow_private_chats = true
 allow_group_chats = true
 allow_topics = true
