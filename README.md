@@ -58,29 +58,30 @@ Telegram-обвязка для `Codex CLI`, где каждый Telegram chat/to
 
 ## Команды
 
-- `/start`
-- `/help`
-- `/status`
-- `/where`
-- `/workspaces`
-- `/bind <name> <path>`
-- `/use <name>`
-- `/newsession`
-- `/resetsession`
-- `/stop`
-- `/pwd`
-- `/execmode [readonly|workspace-write]`
-- `/approvals [never|untrusted]`
-- `/model [name]`
-- `/debugstatus`
+- `/start` : показывает стартовое сообщение, текущий workspace и базовые подсказки.
+- `/help` : показывает список доступных команд.
+- `/status` : показывает текущий workspace, session id, режим sandbox, approvals и занятость сессии.
+- `/where` : показывает, какой workspace привязан к текущему chat/topic.
+- `/workspaces` : показывает доступные workspace aliases и авто-алиасы `project:<name>`.
+- `/bind <name> <path>` : создаёт или обновляет alias workspace на абсолютный путь и привязывает его к текущему chat/topic. Команда доступна только admin user.
+- `/use <name>` : переключает текущий chat/topic на выбранный workspace. В chats with topics создаёт новый topic с отдельной Codex-сессией.
+- `/newsession` : сбрасывает текущий session id для workspace и начинает новый контекст.
+- `/resetsession` : то же, что `/newsession`.
+- `/stop` : останавливает текущий активный run Codex для этого workspace.
+- `/pwd` : краткий алиас для `/where`.
+- `/execmode [readonly|workspace-write]` : показывает или меняет sandbox mode для текущего workspace.
+- `/approvals [never|untrusted]` : показывает или меняет approval policy для текущего workspace.
+- `/model [name]` : показывает текущую модель или задаёт новую для workspace.
+- `/debugstatus` : показывает внутреннюю диагностику gateway и активные runtime. Команда доступна только admin user.
 
 ## Telegram bot setup
 
 1. Создать бота через `@BotFather`.
 2. Получить token.
 3. Для групп включить privacy mode так, как вам нужно.
-4. Добавить бота в группу и при необходимости дать право читать сообщения.
-5. Для topic-based работы использовать forum topics в supergroup.
+4. Для personal chats with topics включить `Threaded mode` в настройках бота через `@BotFather`.
+5. Добавить бота в группу и при необходимости дать право читать сообщения.
+6. Для topic-based работы использовать forum topics в supergroup или threaded mode в personal chat.
 
 ## Установка
 
@@ -197,6 +198,7 @@ openclaw = "/srv/openclaw"
 - если команда `/use <workspace>` вызывается в Telegram forum supergroup или в private chat с включённым topic mode, бот создаёт новый topic;
 - новый topic привязывается к отдельной Codex-сессии, даже если путь workspace совпадает с уже существующим;
 - это позволяет держать независимые обсуждения и контекст по одному и тому же проекту в разных темах.
+- для personal chat этот режим требует, чтобы у бота был включён `Threaded mode` через `@BotFather`.
 
 ## Изоляция
 
