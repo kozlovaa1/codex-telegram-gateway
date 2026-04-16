@@ -194,9 +194,9 @@ sudo systemctl status codex-telegram-gateway
 default_workspace_name = "server-ops"
 
 [workspace_defaults]
-server-ops = "/srv/projects"
-infra = "/srv/infra"
-openclaw = "/srv/openclaw"
+server-ops = "/absolute/path/for/general-ops"
+infra = "/absolute/path/to/infra"
+openclaw = "/absolute/path/to/openclaw"
 ```
 
 Практически это значит, что новый непривязанный чат сразу сможет задавать вопросы про состояние сервера. Если нужен другой корень, поменяйте путь у `server-ops`.
@@ -219,7 +219,7 @@ openclaw = "/srv/openclaw"
 
 ## Логи и диагностика
 
-- structured JSON logs: `/var/log/codex-telegram-gateway/gateway.log`
+- structured JSON logs: `<log_dir>/gateway.log`
 - входящие Telegram updates логируются
 - запуск/завершение Codex runs логируется
 - `/status` и `/debugstatus` помогают понять состояние

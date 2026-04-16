@@ -16,9 +16,9 @@ stream_edit_interval_seconds = 2.0
 status_port = 8085
 
 # Runtime state locations. The service user must be able to write here.
-sqlite_path = "/var/lib/codex-telegram-gateway/gateway.sqlite3"
-runtime_dir = "/var/lib/codex-telegram-gateway"
-log_dir = "/var/log/codex-telegram-gateway"
+sqlite_path = "/var/lib/your-gateway-name/gateway.sqlite3"
+runtime_dir = "/var/lib/your-gateway-name"
+log_dir = "/var/log/your-gateway-name"
 
 # Absolute path to the Codex CLI binary visible to the service user.
 codex_bin = "/home/service-user/.npm-global/bin/codex"
@@ -54,16 +54,16 @@ per_user_rate_limit_max_messages = 6
 trusted_admin_only_bind = true
 
 # Only these root paths may be used for workspace binding.
-allowed_roots = ["/srv/infra", "/srv/openclaw", "/srv/projects"]
+allowed_roots = ["/absolute/path/to/infra", "/absolute/path/to/projects"]
 
 # Top-level directories under these roots are exposed as project:<name> aliases in /workspaces.
-project_alias_roots = ["/srv/projects"]
+project_alias_roots = ["/absolute/path/to/projects"]
 
 [workspace_defaults]
 # Static workspace aliases available from startup.
-infra = "/srv/infra"
-openclaw = "/srv/openclaw"
-server-ops = "/srv/projects"
+infra = "/absolute/path/to/infra"
+openclaw = "/absolute/path/to/openclaw"
+server-ops = "/absolute/path/for/general-ops"
 
 [telegram]
 # Chat types accepted by the bot.

@@ -5,11 +5,14 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=deploy
-Group=deploy
-WorkingDirectory=/srv/projects/codex-telegram-gateway
-EnvironmentFile=/srv/projects/codex-telegram-gateway/.env
-ExecStart=/srv/projects/codex-telegram-gateway/.venv/bin/python3 -m codex_telegram_gateway --config /srv/projects/codex-telegram-gateway/config.toml --env-file /srv/projects/codex-telegram-gateway/.env
+# Replace these values with the user/group chosen for your deployment.
+User=service-user
+Group=service-group
+
+# Replace <project_dir> with the absolute path where the project is installed.
+WorkingDirectory=<project_dir>
+EnvironmentFile=<project_dir>/.env
+ExecStart=<project_dir>/.venv/bin/python3 -m codex_telegram_gateway --config <project_dir>/config.toml --env-file <project_dir>/.env
 Restart=always
 RestartSec=5
 TimeoutStopSec=20
@@ -17,7 +20,13 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/srv/projects/codex-telegram-gateway /srv/infra /srv/openclaw /srv/projects /var/lib/codex-telegram-gateway /var/log/codex-telegram-gateway /home/deploy/.npm-global /home/deploy/.codex
+
+# Replace these paths with the directories your service must read/write:
+# - project directory
+# - allowed workspace roots
+# - runtime/log directories
+# - Codex binary/profile locations if they live under protected home directories
+ReadWritePaths=<project_dir> <allowed_root_1> <allowed_root_2> <state_dir> <log_dir> <codex_home_dir>
 
 [Install]
 WantedBy=multi-user.target

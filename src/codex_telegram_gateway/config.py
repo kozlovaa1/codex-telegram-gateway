@@ -111,7 +111,7 @@ def load_config(config_path: str | os.PathLike[str], env_path: str | os.PathLike
         per_user_rate_limit_max_messages=int(data.get("per_user_rate_limit_max_messages", 6)),
         trusted_admin_only_bind=bool(data.get("trusted_admin_only_bind", True)),
         allowed_roots=[Path(p) for p in data.get("allowed_roots", [])],
-        project_alias_roots=[Path(p) for p in data.get("project_alias_roots", ["/srv/projects"])],
+        project_alias_roots=[Path(p) for p in data.get("project_alias_roots", [])],
         workspace_defaults={str(k): str(v) for k, v in data.get("workspace_defaults", {}).items()},
         telegram=TelegramSettings(
             allow_private_chats=bool(telegram_data.get("allow_private_chats", True)),
