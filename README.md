@@ -107,7 +107,10 @@ sudo chown -R <service_user>:<service_group> /var/lib/codex-telegram-gateway /va
 ```dotenv
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_ADMIN_IDS=111111111,222222222
+OPENAI_API_KEY=...   # optional
 ```
+
+Если используется API key, его нужно прописывать именно в `.env` рядом с `TELEGRAM_BOT_TOKEN`.
 
 Заполнить `config.toml`:
 
