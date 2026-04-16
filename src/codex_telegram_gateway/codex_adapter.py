@@ -9,6 +9,7 @@ import time
 from asyncio.subprocess import Process
 from pathlib import Path
 from typing import Any, Awaitable, Callable
+from uuid import uuid4
 
 from .models import CodexRunResult
 
@@ -75,6 +76,7 @@ class CodexAdapter:
         (home / ".local" / "share").mkdir(parents=True, exist_ok=True)
         (home / ".local" / "state").mkdir(parents=True, exist_ok=True)
         (home / ".cache").mkdir(parents=True, exist_ok=True)
+        (self.runtime_dir / "output").mkdir(parents=True, exist_ok=True)
         self._sync_auth_from_source(home)
 
     def _sync_auth_from_source(self, runtime_home: Path) -> None:
@@ -108,6 +110,7 @@ class CodexAdapter:
         on_process: ProcessCallback | None = None,
     ) -> tuple[CodexRunResult, Process]:
         self.prepare_runtime_home()
+        output_last_message = self.runtime_dir / "output" / f"{uuid4()}.txt"
         cmd = [
             self.codex_bin,
             "exec",
@@ -117,8 +120,8 @@ class CodexAdapter:
             workspace_path,
             "--sandbox",
             sandbox_mode,
-            "--ask-for-approval",
-            approval_policy,
+            "--output-last-message",
+            str(output_last_message),
         ]
         if model:
             cmd.extend(["--model", model])
@@ -179,6 +182,13 @@ class CodexAdapter:
             await asyncio.gather(*readers, return_exceptions=True)
         duration = time.monotonic() - started
         final_text = "\n".join(part for part in final_text_parts if part).strip()
+        if output_last_message.exists():
+            try:
+                output_text = output_last_message.read_text(encoding="utf-8").strip()
+                if output_text:
+                    final_text = output_text
+            finally:
+                output_last_message.unlink(missing_ok=True)
         result = CodexRunResult(
             ok=(proc.returncode == 0),
             final_text=final_text,
