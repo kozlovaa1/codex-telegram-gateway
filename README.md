@@ -132,6 +132,8 @@ sudo systemctl enable --now codex-telegram-gateway
 sudo systemctl status codex-telegram-gateway
 ```
 
+Важно: systemd unit запускает сервис через `/srv/projects/codex-telegram-gateway/.venv/bin/python3`, поэтому перед `enable --now` нужно создать `.venv` и выполнить `.venv/bin/pip install -e .`.
+
 ## Как добавить workspace
 
 В Telegram:
