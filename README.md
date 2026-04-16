@@ -10,6 +10,7 @@ Telegram-обвязка для `Codex CLI`, где каждый Telegram chat/to
 - SQLite для mapping и session state.
 - безопасная валидация путей по whitelist roots.
 - базовые inline-кнопки: `Status`, `Where`, `Reset Session`.
+- настраиваемый `default workspace` для непривязанных чатов.
 
 ## Почему Python
 
@@ -115,6 +116,7 @@ TELEGRAM_ADMIN_IDS=111111111,222222222
 - `log_dir`
 - `allowed_roots`
 - `workspace_defaults`
+- `default_workspace_name`
 
 Проверьте соответствие путей выбранному сервисному пользователю:
 
@@ -130,6 +132,12 @@ TELEGRAM_ADMIN_IDS=111111111,222222222
 - значение `codex_auth_source_home` должно быть настроено под ваш сервер и выбранного пользователя.
 
 Важно: пользователь сервиса должен иметь рабочий `codex login` в `codex_auth_source_home` или API key в `.env`.
+
+Поведение непривязанных чатов:
+
+- если задан `default_workspace_name`, новый чат или topic без явного `/use` работает в этом workspace;
+- это удобно для отдельного server-ops чата, где агент может проверять `docker ps`, `systemctl`, `journalctl`, загрузку сервера и общую диагностику;
+- для рабочих чатов и проектов можно потом явно переключиться через `/use <name>`.
 
 ## Запуск
 
@@ -169,6 +177,19 @@ sudo systemctl status codex-telegram-gateway
 ```
 
 `/workspaces` показывает как явно зарегистрированные workspace, так и авто-алиасы для директории первого уровня внутри `/srv/projects`.
+
+Пример server-ops workspace по умолчанию:
+
+```toml
+default_workspace_name = "server-ops"
+
+[workspace_defaults]
+server-ops = "/srv/projects"
+infra = "/srv/infra"
+openclaw = "/srv/openclaw"
+```
+
+Практически это значит, что новый непривязанный чат сразу сможет задавать вопросы про состояние сервера. Если нужен другой корень, поменяйте путь у `server-ops`.
 
 ## Изоляция
 

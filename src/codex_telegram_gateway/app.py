@@ -110,9 +110,13 @@ class GatewayApp:
 
     def _workspace_from_scope(self, scope: ChatScope) -> tuple[str, str] | None:
         binding = self.store.get_binding(scope)
-        if not binding:
+        if binding:
+            workspace = self.store.get_workspace(binding.workspace_name)
+            if workspace:
+                return workspace.name, workspace.path
+        if not self.config.default_workspace_name:
             return None
-        workspace = self.store.get_workspace(binding.workspace_name)
+        workspace = self.store.get_workspace(self.config.default_workspace_name)
         if not workspace:
             return None
         return workspace.name, workspace.path
@@ -132,7 +136,17 @@ class GatewayApp:
         command = parts[0].split("@", 1)[0].lower()
         args = parts[1:]
         if command == "/start":
-            await self.telegram.send_message(chat_id, "Codex Telegram Gateway is ready.\nUse /help and /workspaces to bind a workspace.", thread_id, reply_markup=INLINE_KEYBOARD)
+            resolved = self._workspace_from_scope(scope)
+            if resolved:
+                workspace_name, workspace_path = resolved
+                text = (
+                    "Codex Telegram Gateway is ready.\n"
+                    f"Current workspace: {workspace_name} -> {workspace_path}\n"
+                    "Use /help, /where and /workspaces to inspect or change it."
+                )
+            else:
+                text = "Codex Telegram Gateway is ready.\nUse /help and /workspaces to bind a workspace."
+            await self.telegram.send_message(chat_id, text, thread_id, reply_markup=INLINE_KEYBOARD)
         elif command == "/help":
             await self.telegram.send_message(chat_id, self._help_text(), thread_id)
         elif command == "/status":
@@ -229,7 +243,9 @@ class GatewayApp:
             await self.telegram.send_message(chat_id, "No workspace bound. Use /workspaces and /use <name>.", thread_id)
             return
         name, path = resolved
-        await self.telegram.send_message(chat_id, f"Workspace: {name}\nPath: {path}\nScope: {scope.key}", thread_id)
+        binding = self.store.get_binding(scope)
+        mode = "explicit" if binding else "default"
+        await self.telegram.send_message(chat_id, f"Workspace: {name}\nPath: {path}\nScope: {scope.key}\nBinding: {mode}", thread_id)
 
     async def _send_status(self, scope: ChatScope, chat_id: int, thread_id: int | None) -> None:
         resolved = self._workspace_from_scope(scope)

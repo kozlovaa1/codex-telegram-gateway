@@ -29,6 +29,7 @@ class AppConfig:
     log_dir: Path
     codex_bin: str
     codex_auth_source_home: Path | None
+    default_workspace_name: str | None
     default_model: str | None
     default_sandbox_mode: str
     default_approval_policy: str
@@ -96,6 +97,7 @@ def load_config(config_path: str | os.PathLike[str], env_path: str | os.PathLike
         log_dir=Path(data["log_dir"]),
         codex_bin=str(data["codex_bin"]),
         codex_auth_source_home=Path(data["codex_auth_source_home"]) if str(data.get("codex_auth_source_home", "")).strip() else None,
+        default_workspace_name=(str(data.get("default_workspace_name", "")).strip() or None),
         default_model=(str(data.get("default_model", "")).strip() or None),
         default_sandbox_mode=str(data.get("default_sandbox_mode", "workspace-write")),
         default_approval_policy=str(data.get("default_approval_policy", "never")),
