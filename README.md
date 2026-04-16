@@ -17,14 +17,14 @@ Telegram-обвязка для `Codex CLI`, где каждый Telegram chat/to
 
 Выбран `Python 3.12+` и stdlib-only подход:
 
-- уже есть на сервере;
+- обычно уже доступен в современных Linux-окружениях;
 - не нужен отдельный build step;
 - меньше внешних зависимостей и проще systemd;
 - надёжный `subprocess`-адаптер к существующему `Codex CLI`.
 
 ## Требования
 
-- Debian 13
+- Linux-сервер с `systemd`
 - Python 3.12+
 - установленный `Codex CLI`
 - действующий Telegram bot token
@@ -85,21 +85,26 @@ Telegram-обвязка для `Codex CLI`, где каждый Telegram chat/to
 
 ## Установка
 
-```bash
-cd /srv/projects
-python3 -m venv /srv/projects/codex-telegram-gateway/.venv
-/srv/projects/codex-telegram-gateway/.venv/bin/pip install -e /srv/projects/codex-telegram-gateway
-cp /srv/projects/codex-telegram-gateway/.env.example /srv/projects/codex-telegram-gateway/.env
-cp /srv/projects/codex-telegram-gateway/config.example.toml /srv/projects/codex-telegram-gateway/config.toml
-sudo mkdir -p /var/lib/codex-telegram-gateway /var/log/codex-telegram-gateway
-```
+В примерах ниже:
 
-Под `service_user` ниже имеется в виду пользователь, от имени которого будет запускаться сервис.
+- `<project_dir>` : каталог, куда установлен проект;
+- `<service_user>` / `<service_group>` : пользователь и группа, под которыми будет работать сервис;
+- `<state_dir>` : каталог runtime/state данных;
+- `<log_dir>` : каталог логов.
+
+```bash
+cd <project_dir>
+python3 -m venv .venv
+.venv/bin/pip install -e .
+cp .env.example .env
+cp config.example.toml config.toml
+sudo mkdir -p <state_dir> <log_dir>
+```
 
 После создания каталогов выдать права:
 
 ```bash
-sudo chown -R <service_user>:<service_group> /var/lib/codex-telegram-gateway /var/log/codex-telegram-gateway
+sudo chown -R <service_user>:<service_group> <state_dir> <log_dir>
 ```
 
 Заполнить `.env`:
@@ -134,7 +139,7 @@ OPENAI_API_KEY=...   # optional
 
 - если задан `OPENAI_API_KEY`, `codex` использует его;
 - если `OPENAI_API_KEY` не задан, gateway копирует `${codex_auth_source_home}/auth.json` в свой runtime-home и использует существующий `codex login`;
-- значение `codex_auth_source_home` должно быть настроено под ваш сервер и выбранного пользователя.
+- значение `codex_auth_source_home` должно быть настроено под ваше окружение и выбранного пользователя.
 
 Важно: пользователь сервиса должен иметь рабочий `codex login` в `codex_auth_source_home` или API key в `.env`.
 
@@ -147,7 +152,7 @@ OPENAI_API_KEY=...   # optional
 ## Запуск
 
 ```bash
-cd /srv/projects/codex-telegram-gateway
+cd <project_dir>
 PYTHONPATH=src .venv/bin/python3 -m codex_telegram_gateway --config config.toml --env-file .env
 ```
 
@@ -160,15 +165,15 @@ PYTHONPATH=src .venv/bin/python3 -m codex_telegram_gateway --config config.toml 
 - при необходимости проверьте `ReadWritePaths=` и пути к `codex_bin` и `codex_auth_source_home`.
 
 ```bash
-sudo cp /srv/projects/codex-telegram-gateway/systemd/codex-telegram-gateway.service /etc/systemd/system/
+sudo cp <project_dir>/systemd/codex-telegram-gateway.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now codex-telegram-gateway
 sudo systemctl status codex-telegram-gateway
 ```
 
-Важно: systemd unit запускает сервис через `/srv/projects/codex-telegram-gateway/.venv/bin/python3`, поэтому перед `enable --now` нужно создать `.venv` и выполнить `.venv/bin/pip install -e .`.
+Важно: systemd unit запускает сервис через `<project_dir>/.venv/bin/python3`, поэтому перед `enable --now` нужно создать `.venv` и выполнить `.venv/bin/pip install -e .`.
 
-Также `User=` в unit должен совпадать с владельцем `/var/lib/codex-telegram-gateway` и `/var/log/codex-telegram-gateway`.
+Также `User=` в unit должен совпадать с владельцем `runtime_dir` и `log_dir`.
 
 ## Как добавить workspace
 
@@ -177,11 +182,11 @@ sudo systemctl status codex-telegram-gateway
 ```text
 /workspaces
 /use infra
-/bind myproj /srv/projects/myproj
+/bind myproj /absolute/path/to/myproj
 /use project:myproj
 ```
 
-`/workspaces` показывает как явно зарегистрированные workspace, так и авто-алиасы для директории первого уровня внутри `/srv/projects`.
+`/workspaces` показывает как явно зарегистрированные workspace, так и авто-алиасы для директории первого уровня внутри `project_alias_roots`.
 
 Пример server-ops workspace по умолчанию:
 
@@ -222,7 +227,7 @@ openclaw = "/srv/openclaw"
 ## Тесты
 
 ```bash
-cd /srv/projects/codex-telegram-gateway
+cd <project_dir>
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
 
