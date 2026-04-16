@@ -44,7 +44,7 @@ Telegram-обвязка для `Codex CLI`, где каждый Telegram chat/to
 ## Безопасность
 
 - сервис не запускается от `root`;
-- по умолчанию systemd unit использует `deploy`;
+- systemd unit должен запускаться от выделенного сервисного пользователя или от того пользователя, чью авторизацию Codex вы хотите использовать;
 - bind path проходит `resolve(strict=True)` и проверку на выход за разрешённые roots;
 - разрешённые roots задаются в `config.toml`;
 - `/bind` ограничен admin user ids;
@@ -52,7 +52,7 @@ Telegram-обвязка для `Codex CLI`, где каждый Telegram chat/to
 - `/execmode` разрешает только `read-only` и `workspace-write`;
 - режим `dangerously-bypass-approvals-and-sandbox` не используется;
 - секреты лежат в `.env`, в логи не попадают.
-- если `OPENAI_API_KEY` не задан, сервис копирует `auth.json` текущего пользователя из `/home/deploy/.codex` в свой runtime-home и использует ChatGPT/Codex login от этого пользователя.
+- если `OPENAI_API_KEY` не задан, сервис копирует `auth.json` из `codex_auth_source_home` в свой runtime-home и использует существующий ChatGPT/Codex login.
 
 ## Команды
 
@@ -88,7 +88,15 @@ python3 -m venv /srv/projects/codex-telegram-gateway/.venv
 /srv/projects/codex-telegram-gateway/.venv/bin/pip install -e /srv/projects/codex-telegram-gateway
 cp /srv/projects/codex-telegram-gateway/.env.example /srv/projects/codex-telegram-gateway/.env
 cp /srv/projects/codex-telegram-gateway/config.example.toml /srv/projects/codex-telegram-gateway/config.toml
-mkdir -p /var/lib/codex-telegram-gateway /var/log/codex-telegram-gateway
+sudo mkdir -p /var/lib/codex-telegram-gateway /var/log/codex-telegram-gateway
+```
+
+Под `service_user` ниже имеется в виду пользователь, от имени которого будет запускаться сервис.
+
+После создания каталогов выдать права:
+
+```bash
+sudo chown -R <service_user>:<service_group> /var/lib/codex-telegram-gateway /var/log/codex-telegram-gateway
 ```
 
 Заполнить `.env`:
@@ -108,11 +116,18 @@ TELEGRAM_ADMIN_IDS=111111111,222222222
 - `allowed_roots`
 - `workspace_defaults`
 
+Проверьте соответствие путей выбранному сервисному пользователю:
+
+- `codex_bin` должен указывать на доступный этому пользователю `codex`;
+- `codex_auth_source_home` должен указывать на каталог `.codex` того пользователя, чью авторизацию нужно использовать;
+- сервис должен иметь запись в `runtime_dir` и `log_dir`;
+- сервис должен иметь чтение `codex_auth_source_home/auth.json`, если `OPENAI_API_KEY` не используется.
+
 Авторизация работает так:
 
 - если задан `OPENAI_API_KEY`, `codex` использует его;
 - если `OPENAI_API_KEY` не задан, gateway копирует `${codex_auth_source_home}/auth.json` в свой runtime-home и использует существующий `codex login`;
-- по умолчанию `codex_auth_source_home` указывает на `/home/deploy/.codex`.
+- значение `codex_auth_source_home` должно быть настроено под ваш сервер и выбранного пользователя.
 
 Важно: пользователь сервиса должен иметь рабочий `codex login` в `codex_auth_source_home` или API key в `.env`.
 
@@ -120,10 +135,16 @@ TELEGRAM_ADMIN_IDS=111111111,222222222
 
 ```bash
 cd /srv/projects/codex-telegram-gateway
-PYTHONPATH=src python3 -m codex_telegram_gateway --config config.toml --env-file .env
+PYTHONPATH=src .venv/bin/python3 -m codex_telegram_gateway --config config.toml --env-file .env
 ```
 
 ## Systemd
+
+Перед установкой unit:
+
+- откройте `systemd/codex-telegram-gateway.service`;
+- замените `User=` и `Group=` на вашего сервисного пользователя;
+- при необходимости проверьте `ReadWritePaths=` и пути к `codex_bin` и `codex_auth_source_home`.
 
 ```bash
 sudo cp /srv/projects/codex-telegram-gateway/systemd/codex-telegram-gateway.service /etc/systemd/system/
@@ -133,6 +154,8 @@ sudo systemctl status codex-telegram-gateway
 ```
 
 Важно: systemd unit запускает сервис через `/srv/projects/codex-telegram-gateway/.venv/bin/python3`, поэтому перед `enable --now` нужно создать `.venv` и выполнить `.venv/bin/pip install -e .`.
+
+Также `User=` в unit должен совпадать с владельцем `/var/lib/codex-telegram-gateway` и `/var/log/codex-telegram-gateway`.
 
 ## Как добавить workspace
 
@@ -173,6 +196,7 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 ## Troubleshooting
 
 - Если бот не отвечает, проверить `systemctl status` и `journalctl -u codex-telegram-gateway -f`.
+- Если сервис падает сразу с `PermissionError`, проверить владельца и права `runtime_dir` и `log_dir`.
 - Если Codex падает сразу, проверить `codex_bin`, credentials и права на `runtime_dir`.
 - Если используется ChatGPT login без API key, проверить наличие `${codex_auth_source_home}/auth.json` и права на чтение этого файла.
 - Если `/bind` отклоняется, проверить canonical path и `allowed_roots`.
@@ -183,4 +207,4 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 - long polling, а не webhook;
 - стриминг best-effort и зависит от JSON events `codex exec --json`;
 - health endpoint пока не поднят, роль health выполняют `/status` и `/debugstatus`;
-- unit по умолчанию использует `deploy`; для более жёсткой изоляции можно перевести на отдельного service user после настройки прав и отдельного `codex login`.
+- systemd unit в репозитории содержит примерные значения `User=`, `Group=` и путей; перед production-запуском их нужно привести в соответствие с вашей схемой пользователей и прав.
