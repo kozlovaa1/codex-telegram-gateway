@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from codex_telegram_gateway.codex_adapter import CodexAdapter
 from codex_telegram_gateway.models import CodexRunResult
 from codex_telegram_gateway.session_manager import SessionManager
 from codex_telegram_gateway.workspace_store import WorkspaceStore

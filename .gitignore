@@ -1,4 +1,5 @@
 .env
+config.toml
 .venv/
 __pycache__/
 *.pyc
@@ -10,3 +11,4 @@ __pycache__/
 .mypy_cache/
 dist/
 build/
+*.egg-info/

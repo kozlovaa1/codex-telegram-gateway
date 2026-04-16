@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import signal
 import time
 from asyncio.subprocess import Process
@@ -40,11 +41,19 @@ def extract_display_text(event: dict[str, Any]) -> str:
 
 
 class CodexAdapter:
-    def __init__(self, codex_bin: str, runtime_dir: Path, timeout_seconds: int, kill_grace_seconds: int) -> None:
+    def __init__(
+        self,
+        codex_bin: str,
+        runtime_dir: Path,
+        timeout_seconds: int,
+        kill_grace_seconds: int,
+        auth_source_home: Path | None = None,
+    ) -> None:
         self.codex_bin = codex_bin
         self.runtime_dir = runtime_dir
         self.timeout_seconds = timeout_seconds
         self.kill_grace_seconds = kill_grace_seconds
+        self.auth_source_home = auth_source_home
 
     def runtime_home(self) -> Path:
         return self.runtime_dir / "home"
@@ -59,6 +68,33 @@ class CodexAdapter:
         env["XDG_CACHE_HOME"] = str(home / ".cache")
         return env
 
+    def prepare_runtime_home(self) -> None:
+        home = self.runtime_home()
+        home.mkdir(parents=True, exist_ok=True)
+        (home / ".config").mkdir(parents=True, exist_ok=True)
+        (home / ".local" / "share").mkdir(parents=True, exist_ok=True)
+        (home / ".local" / "state").mkdir(parents=True, exist_ok=True)
+        (home / ".cache").mkdir(parents=True, exist_ok=True)
+        self._sync_auth_from_source(home)
+
+    def _sync_auth_from_source(self, runtime_home: Path) -> None:
+        if os.environ.get("OPENAI_API_KEY"):
+            return
+        source_home = self.auth_source_home or Path.home() / ".codex"
+        source_auth = source_home / "auth.json"
+        if not source_auth.exists() or not source_auth.is_file():
+            return
+        target_auth = runtime_home / ".codex" / "auth.json"
+        target_auth.parent.mkdir(parents=True, exist_ok=True)
+        should_copy = True
+        if target_auth.exists():
+            try:
+                should_copy = source_auth.stat().st_mtime_ns > target_auth.stat().st_mtime_ns
+            except FileNotFoundError:
+                should_copy = True
+        if should_copy:
+            shutil.copy2(source_auth, target_auth)
+
     async def run(
         self,
         *,
@@ -71,7 +107,7 @@ class CodexAdapter:
         on_event: EventCallback | None = None,
         on_process: ProcessCallback | None = None,
     ) -> tuple[CodexRunResult, Process]:
-        self.runtime_home().mkdir(parents=True, exist_ok=True)
+        self.prepare_runtime_home()
         cmd = [
             self.codex_bin,
             "exec",

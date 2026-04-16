@@ -34,6 +34,7 @@ def main() -> None:
         runtime_dir=config.runtime_dir,
         timeout_seconds=config.command_timeout_seconds,
         kill_grace_seconds=config.process_kill_grace_seconds,
+        auth_source_home=config.codex_auth_source_home,
     )
     sessions = SessionManager(
         store=store,

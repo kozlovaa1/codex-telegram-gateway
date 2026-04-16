@@ -52,6 +52,7 @@ Telegram-обвязка для `Codex CLI`, где каждый Telegram chat/to
 - `/execmode` разрешает только `read-only` и `workspace-write`;
 - режим `dangerously-bypass-approvals-and-sandbox` не используется;
 - секреты лежат в `.env`, в логи не попадают.
+- если `OPENAI_API_KEY` не задан, сервис копирует `auth.json` текущего пользователя из `/home/deploy/.codex` в свой runtime-home и использует ChatGPT/Codex login от этого пользователя.
 
 ## Команды
 
@@ -95,19 +96,25 @@ mkdir -p /var/lib/codex-telegram-gateway /var/log/codex-telegram-gateway
 ```dotenv
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_ADMIN_IDS=111111111,222222222
-OPENAI_API_KEY=...
 ```
 
 Заполнить `config.toml`:
 
 - `codex_bin`
+- `codex_auth_source_home`
 - `sqlite_path`
 - `runtime_dir`
 - `log_dir`
 - `allowed_roots`
 - `workspace_defaults`
 
-Важно: пользователь сервиса должен иметь рабочий `codex login` или нужные env credentials.
+Авторизация работает так:
+
+- если задан `OPENAI_API_KEY`, `codex` использует его;
+- если `OPENAI_API_KEY` не задан, gateway копирует `${codex_auth_source_home}/auth.json` в свой runtime-home и использует существующий `codex login`;
+- по умолчанию `codex_auth_source_home` указывает на `/home/deploy/.codex`.
+
+Важно: пользователь сервиса должен иметь рабочий `codex login` в `codex_auth_source_home` или API key в `.env`.
 
 ## Запуск
 
@@ -165,6 +172,7 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 
 - Если бот не отвечает, проверить `systemctl status` и `journalctl -u codex-telegram-gateway -f`.
 - Если Codex падает сразу, проверить `codex_bin`, credentials и права на `runtime_dir`.
+- Если используется ChatGPT login без API key, проверить наличие `${codex_auth_source_home}/auth.json` и права на чтение этого файла.
 - Если `/bind` отклоняется, проверить canonical path и `allowed_roots`.
 - Если в группе не видны сообщения, проверить privacy mode бота.
 
