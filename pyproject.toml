@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codex-telegram-gateway"
+version = "0.1.0"
+description = "Telegram gateway for Codex CLI with per-workspace session isolation"
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [{ name = "OpenAI Codex" }]
+dependencies = []
+
+[project.scripts]
+codex-telegram-gateway = "codex_telegram_gateway.__main__:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,34 @@
+bot_name = "Codex Gateway"
+telegram_api_base = "https://api.telegram.org"
+poll_timeout_seconds = 25
+poll_retry_delay_seconds = 3
+telegram_message_chunk = 3900
+stream_edit_interval_seconds = 2.0
+status_port = 8085
+sqlite_path = "/var/lib/codex-telegram-gateway/gateway.sqlite3"
+runtime_dir = "/var/lib/codex-telegram-gateway"
+log_dir = "/var/log/codex-telegram-gateway"
+codex_bin = "/home/deploy/.npm-global/bin/codex"
+default_model = ""
+default_sandbox_mode = "workspace-write"
+default_approval_policy = "never"
+session_idle_ttl_seconds = 21600
+command_timeout_seconds = 1800
+process_kill_grace_seconds = 8
+max_parallel_processes = 2
+max_queue_per_workspace = 8
+max_active_workspaces = 16
+per_user_rate_limit_window_seconds = 20
+per_user_rate_limit_max_messages = 6
+trusted_admin_only_bind = true
+allowed_roots = ["/srv/infra", "/srv/openclaw", "/srv/projects"]
+project_alias_roots = ["/srv/projects"]
+
+[workspace_defaults]
+infra = "/srv/infra"
+openclaw = "/srv/openclaw"
+
+[telegram]
+allow_private_chats = true
+allow_group_chats = true
+allow_topics = true
