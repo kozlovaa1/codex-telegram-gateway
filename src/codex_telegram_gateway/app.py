@@ -5,6 +5,7 @@ import json
 import logging
 import signal
 import textwrap
+from datetime import UTC, datetime
 
 from .config import AppConfig
 from .logging_utils import log_extra
@@ -27,6 +28,27 @@ INLINE_KEYBOARD = json.dumps(
         ]
     }
 )
+
+SESSION_WORKSPACE_PREFIX = "session:"
+
+
+def make_session_workspace_name(base_name: str, chat_id: int, thread_id: int) -> str:
+    return f"{SESSION_WORKSPACE_PREFIX}{chat_id}:{thread_id}:{base_name}"
+
+
+def display_workspace_name(name: str) -> str:
+    if not name.startswith(SESSION_WORKSPACE_PREFIX):
+        return name
+    parts = name.split(":", 3)
+    return parts[3] if len(parts) == 4 else name
+
+
+def is_internal_session_workspace(name: str) -> bool:
+    return name.startswith(SESSION_WORKSPACE_PREFIX)
+
+
+def supports_topic_creation(chat_type: str | None, is_forum: bool) -> bool:
+    return (chat_type == "supergroup" and is_forum) or chat_type == "private"
 
 
 class GatewayApp:
@@ -101,7 +123,16 @@ class GatewayApp:
         scope = ChatScope(chat_id=int(chat["id"]), thread_id=message.get("message_thread_id"))
         text = str(message.get("text", "")).strip()
         if text.startswith("/"):
-            await self._handle_command(scope, user_id, chat["id"], message.get("message_thread_id"), message.get("message_id"), text)
+            await self._handle_command(
+                scope,
+                user_id,
+                chat["id"],
+                message.get("message_thread_id"),
+                message.get("message_id"),
+                text,
+                chat_type=chat_type,
+                is_forum=bool(chat.get("is_forum")),
+            )
             return
         await self._handle_prompt(scope, user_id, chat["id"], message.get("message_thread_id"), message.get("message_id"), text)
 
@@ -131,7 +162,17 @@ class GatewayApp:
                     result[f"project:{child.name}"] = str(child.resolve())
         return result
 
-    async def _handle_command(self, scope: ChatScope, user_id: int, chat_id: int, thread_id: int | None, message_id: int | None, text: str) -> None:
+    async def _handle_command(
+        self,
+        scope: ChatScope,
+        user_id: int,
+        chat_id: int,
+        thread_id: int | None,
+        message_id: int | None,
+        text: str,
+        chat_type: str | None = None,
+        is_forum: bool = False,
+    ) -> None:
         parts = text.split()
         command = parts[0].split("@", 1)[0].lower()
         args = parts[1:]
@@ -141,7 +182,7 @@ class GatewayApp:
                 workspace_name, workspace_path = resolved
                 text = (
                     "Codex Telegram Gateway is ready.\n"
-                    f"Current workspace: {workspace_name} -> {workspace_path}\n"
+                    f"Current workspace: {display_workspace_name(workspace_name)} -> {workspace_path}\n"
                     "Use /help, /where and /workspaces to inspect or change it."
                 )
             else:
@@ -158,7 +199,7 @@ class GatewayApp:
         elif command == "/bind":
             await self._bind(scope, user_id, chat_id, thread_id, args)
         elif command == "/use":
-            await self._use(scope, chat_id, thread_id, args)
+            await self._use(scope, chat_id, thread_id, args, chat_type=chat_type, is_forum=is_forum)
         elif command in {"/newsession", "/resetsession"}:
             await self._reset_session(scope, user_id, chat_id, thread_id)
         elif command == "/stop":
@@ -216,23 +257,47 @@ class GatewayApp:
         self.store.bind_scope(scope, name)
         await self.telegram.send_message(chat_id, f"Bound to `{name}` -> {resolved}", thread_id)
 
-    async def _use(self, scope: ChatScope, chat_id: int, thread_id: int | None, args: list[str]) -> None:
+    async def _use(self, scope: ChatScope, chat_id: int, thread_id: int | None, args: list[str], chat_type: str | None = None, is_forum: bool = False) -> None:
         if len(args) != 1:
             await self.telegram.send_message(chat_id, "Usage: /use <name>", thread_id)
             return
-        available = {w.name: w.path for w in self.store.list_workspaces()}
+        available = {w.name: w.path for w in self.store.list_workspaces() if not is_internal_session_workspace(w.name)}
         available.update(self._dynamic_project_workspaces())
         name = args[0]
         path = available.get(name)
         if not path:
             await self.telegram.send_message(chat_id, f"Unknown workspace: {name}", thread_id)
             return
+        if supports_topic_creation(chat_type, is_forum):
+            topic_title = f"{name} | {datetime.now(UTC).strftime('%Y-%m-%d %H:%M')}"
+            try:
+                created_topic = await self.telegram.create_forum_topic(chat_id, topic_title)
+            except TelegramApiError as exc:
+                await self.telegram.send_message(
+                    chat_id,
+                    f"Failed to create topic for workspace `{name}`: {exc}",
+                    thread_id,
+                )
+                return
+            new_thread_id = int(created_topic["message_thread_id"])
+            session_workspace_name = make_session_workspace_name(name, chat_id, new_thread_id)
+            self.store.upsert_workspace(session_workspace_name, path)
+            self.store.bind_scope(ChatScope(chat_id=chat_id, thread_id=new_thread_id), session_workspace_name)
+            self.store.update_session(session_workspace_name, session_id="", touch_last_used=False)
+            await self.telegram.send_message(
+                chat_id,
+                f"Workspace: {name}\nPath: {path}\nBinding: explicit topic session",
+                new_thread_id,
+                reply_markup=INLINE_KEYBOARD,
+            )
+            await self.telegram.send_message(chat_id, f"Created topic `{topic_title}` for workspace `{name}`.", thread_id)
+            return
         self.store.upsert_workspace(name, path)
         self.store.bind_scope(scope, name)
         await self.telegram.send_message(chat_id, f"Using workspace `{name}` -> {path}", thread_id)
 
     async def _send_workspaces(self, chat_id: int, thread_id: int | None) -> None:
-        items = {w.name: w.path for w in self.store.list_workspaces()}
+        items = {w.name: w.path for w in self.store.list_workspaces() if not is_internal_session_workspace(w.name)}
         items.update(self._dynamic_project_workspaces())
         lines = [f"{name} -> {path}" for name, path in sorted(items.items())]
         await self.telegram.send_message(chat_id, "Available workspaces:\n" + "\n".join(lines[:80]), thread_id)
@@ -245,7 +310,7 @@ class GatewayApp:
         name, path = resolved
         binding = self.store.get_binding(scope)
         mode = "explicit" if binding else "default"
-        await self.telegram.send_message(chat_id, f"Workspace: {name}\nPath: {path}\nScope: {scope.key}\nBinding: {mode}", thread_id)
+        await self.telegram.send_message(chat_id, f"Workspace: {display_workspace_name(name)}\nPath: {path}\nScope: {scope.key}\nBinding: {mode}", thread_id)
 
     async def _send_status(self, scope: ChatScope, chat_id: int, thread_id: int | None) -> None:
         resolved = self._workspace_from_scope(scope)
@@ -257,7 +322,7 @@ class GatewayApp:
         busy = any(item["workspace"] == name and item["busy"] for item in self.sessions.runtime_snapshot())
         text = "\n".join(
             [
-                f"Workspace: {name}",
+                f"Workspace: {display_workspace_name(name)}",
                 f"Path: {path}",
                 f"Session: {session.session_id or 'new'}",
                 f"Busy: {'yes' if busy else 'no'}",

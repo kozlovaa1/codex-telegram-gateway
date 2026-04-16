@@ -5,8 +5,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from codex_telegram_gateway.app import GatewayApp
+from codex_telegram_gateway.app import GatewayApp, display_workspace_name, make_session_workspace_name, supports_topic_creation
 from codex_telegram_gateway.config import AppConfig, TelegramSettings
+from codex_telegram_gateway.models import ChatScope
 from codex_telegram_gateway.workspace_store import WorkspaceStore
 
 
@@ -64,8 +65,17 @@ class AppDefaultWorkspaceTests(unittest.TestCase):
                 telegram=TelegramSettings(True, True, True),
             )
             app = GatewayApp(config, store, DummySessions(), DummyTelegram(), logging.getLogger("test"))
-            resolved = app._workspace_from_scope(__import__("codex_telegram_gateway.models", fromlist=["ChatScope"]).ChatScope(chat_id=1, thread_id=None))
+            resolved = app._workspace_from_scope(ChatScope(chat_id=1, thread_id=None))
             self.assertEqual(resolved, ("server-ops", "/srv/projects"))
+
+    def test_display_workspace_name_hides_internal_topic_session_name(self) -> None:
+        internal = make_session_workspace_name("infra", -100123, 55)
+        self.assertEqual(display_workspace_name(internal), "infra")
+
+    def test_supports_topic_creation_for_private_threaded_chats(self) -> None:
+        self.assertTrue(supports_topic_creation("private", False))
+        self.assertTrue(supports_topic_creation("supergroup", True))
+        self.assertFalse(supports_topic_creation("group", False))
 
 
 if __name__ == "__main__":

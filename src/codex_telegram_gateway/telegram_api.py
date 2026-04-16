@@ -54,3 +54,6 @@ class TelegramApi:
 
     async def answer_callback_query(self, callback_query_id: str, text: str) -> None:
         await self.call("answerCallbackQuery", {"callback_query_id": callback_query_id, "text": text})
+
+    async def create_forum_topic(self, chat_id: int, name: str) -> dict:
+        return await self.call("createForumTopic", {"chat_id": chat_id, "name": name})
