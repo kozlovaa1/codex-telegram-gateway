@@ -1,6 +1,9 @@
 .env
 config.toml
 .venv/
+.agents/
+.codex/
+.ai-factory.json
 __pycache__/
 *.pyc
 *.pyo
