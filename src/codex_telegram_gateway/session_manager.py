@@ -6,12 +6,13 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from typing import Awaitable, Callable
 
 from .codex_adapter import CodexAdapter
 from .codex_adapter import PolicyEnforcementError, ResolvedRunPolicy
 from .execution_policy import ExecutionPolicyResolver
 from .logging_utils import log_extra
-from .models import CodexRunResult, utcnow_iso
+from .models import CodexRunResult, RunEvent, utcnow_iso
 from .workspace_preflight import WorkspacePreflightChecker, WorkspacePreflightError
 from .workspace_store import WorkspaceStore
 
@@ -187,9 +188,18 @@ class SessionManager:
                 )
             return session
 
-    async def execute(self, workspace_name: str, workspace_path: str, user_id: int, prompt: str, stream_callback) -> CodexRunResult:
+    async def execute(
+        self,
+        workspace_name: str,
+        workspace_path: str,
+        user_id: int,
+        prompt: str,
+        stream_callback: Callable[[RunEvent], Awaitable[None]],
+        cleanup_callback: Callable[[str], Awaitable[None]] | None = None,
+    ) -> CodexRunResult:
         runtime = self.get_runtime(workspace_name, workspace_path)
         runtime.current_queue_size += 1
+        cleanup_reason = "failed"
         if runtime.current_queue_size > self.max_queue_per_workspace:
             runtime.current_queue_size -= 1
             raise RuntimeError(f"Workspace queue limit reached for {workspace_name}")
@@ -199,6 +209,7 @@ class SessionManager:
                 if self.preflight_checker is not None:
                     preflight = self.preflight_checker.run(workspace_name, workspace_path)
                     if not preflight.ok:
+                        cleanup_reason = "preflight_failed"
                         raise WorkspacePreflightError(preflight)
                 session = self.store.get_session(workspace_name)
                 session = self._expire_break_glass_if_needed(workspace_name)
@@ -233,6 +244,7 @@ class SessionManager:
                     )
                     runtime.last_used_monotonic = time.monotonic()
                 runtime.current_process = None
+                cleanup_reason = "completed" if result.ok else "failed"
                 self.store.update_session(
                     workspace_name,
                     session_id=(result.session_id or session.session_id),
@@ -251,6 +263,7 @@ class SessionManager:
                 )
                 return result
             except PolicyEnforcementError:
+                cleanup_reason = "policy_rejected"
                 self.store.update_session(
                     workspace_name,
                     busy_state="idle",
@@ -265,6 +278,11 @@ class SessionManager:
                     busy_state="idle",
                     busy_since=None,
                 )
+                if cleanup_callback is not None:
+                    try:
+                        await cleanup_callback(cleanup_reason)
+                    except Exception:
+                        self.logger.exception("session_cleanup_callback_failed")
                 runtime.current_queue_size -= 1
 
     def runtime_snapshot(self) -> list[dict[str, object]]:

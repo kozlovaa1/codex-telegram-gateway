@@ -5,7 +5,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from codex_telegram_gateway.codex_adapter import CodexAdapter, PolicyEnforcementError, ResolvedRunPolicy
+from codex_telegram_gateway.codex_adapter import (
+    CodexAdapter,
+    PolicyEnforcementError,
+    ResolvedRunPolicy,
+    normalize_run_event,
+)
 
 
 class CodexAdapterTests(unittest.TestCase):
@@ -124,6 +129,33 @@ class CodexAdapterTests(unittest.TestCase):
                         command_rules=("workspace-safe",),
                     ),
                 )
+
+    def test_normalize_run_event_shapes_text_delta(self) -> None:
+        event = normalize_run_event({"type": "message.delta", "text": "hello"}, session_id="session-1")
+
+        self.assertIsNotNone(event)
+        assert event is not None
+        self.assertEqual(event.kind, "text_delta")
+        self.assertEqual(event.text, "hello")
+        self.assertEqual(event.raw_type, "message.delta")
+        self.assertEqual(event.session_id, "session-1")
+
+    def test_normalize_run_event_shapes_session_start(self) -> None:
+        event = normalize_run_event({"type": "thread.started", "thread_id": "session-2"})
+
+        self.assertIsNotNone(event)
+        assert event is not None
+        self.assertEqual(event.kind, "session_started")
+        self.assertEqual(event.session_id, "session-2")
+
+    def test_normalize_run_event_keeps_lifecycle_events_without_display_text(self) -> None:
+        event = normalize_run_event({"type": "turn.started", "turn_id": "turn-1"}, session_id="session-3")
+
+        self.assertIsNotNone(event)
+        assert event is not None
+        self.assertEqual(event.kind, "lifecycle")
+        self.assertEqual(event.raw_type, "turn.started")
+        self.assertEqual(event.session_id, "session-3")
 
 
 if __name__ == "__main__":

@@ -6,10 +6,10 @@ import logging
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable
 
-from .codex_adapter import PolicyEnforcementError, extract_display_text
+from .codex_adapter import PolicyEnforcementError
 from .config import AppConfig
 from .logging_utils import log_extra
-from .models import CodexRunResult, TelegramRequestIdentity, TelegramResponseContext
+from .models import CodexRunResult, RunEvent, TelegramRequestIdentity, TelegramResponseContext
 from .telegram_api import TelegramApi, TelegramApiError
 from .workspace_preflight import WorkspacePreflightError
 
@@ -27,7 +27,7 @@ INLINE_KEYBOARD = json.dumps(
 )
 
 
-RunExecutor = Callable[[Callable[[dict], Awaitable[None]]], Awaitable[CodexRunResult]]
+RunExecutor = Callable[[Callable[[RunEvent], Awaitable[None]]], Awaitable[CodexRunResult]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +46,147 @@ class ResponseUxLifecycle:
     last_edit_at: float = 0.0
     stop_event: asyncio.Event = field(default_factory=asyncio.Event)
     typing_task: asyncio.Task[None] | None = None
+    progress_stage: str | None = None
+    progress_disabled: bool = False
+    streaming_disabled: bool = False
+
+
+class ProgressAggregator:
+    def __init__(self, logger: logging.Logger) -> None:
+        self.logger = logger
+
+    def consume(self, event: RunEvent) -> str | None:
+        stage: str | None = None
+        if event.kind == "session_started":
+            stage = "Session ready"
+        elif event.kind == "lifecycle":
+            raw_type = event.raw_type or ""
+            if raw_type == "turn.started":
+                stage = "Thinking"
+            elif "tool" in raw_type:
+                stage = "Running tools"
+            elif "exec" in raw_type or "command" in raw_type:
+                stage = "Running command"
+        elif event.kind == "stderr":
+            stage = "Processing command output"
+        elif event.kind == "error":
+            stage = "Handling issue"
+        if stage is not None:
+            log_extra(
+                self.logger,
+                "progress_aggregation_decision",
+                event_kind=event.kind,
+                raw_type=event.raw_type,
+                stage=stage,
+            )
+        else:
+            log_extra(
+                self.logger,
+                "progress_event_dropped",
+                event_kind=event.kind,
+                raw_type=event.raw_type,
+            )
+        return stage
+
+
+class ProgressReporter:
+    def __init__(self, coordinator: "ResponseUxCoordinator") -> None:
+        self.coordinator = coordinator
+
+    async def report(self, lifecycle: ResponseUxLifecycle, stage: str) -> None:
+        if lifecycle.progress_disabled:
+            log_extra(
+                self.coordinator.logger,
+                "progress_update_skipped",
+                request_id=lifecycle.context.identity.key,
+                reason="disabled",
+                stage=stage,
+            )
+            return
+        if lifecycle.progress_stage == stage:
+            log_extra(
+                self.coordinator.logger,
+                "progress_update_skipped",
+                request_id=lifecycle.context.identity.key,
+                reason="unchanged",
+                stage=stage,
+            )
+            return
+        lifecycle.progress_stage = stage
+        preview = f"[{lifecycle.context.workspace_name}] working\n\nStage: {stage}"
+        try:
+            await self.coordinator._edit_or_fallback(lifecycle, preview, reply_markup=INLINE_KEYBOARD)
+        except Exception:
+            lifecycle.progress_disabled = True
+            self.coordinator.logger.exception("progress_update_failed")
+            log_extra(
+                self.coordinator.logger,
+                "progress_fallback_disabled",
+                request_id=lifecycle.context.identity.key,
+                stage=stage,
+            )
+            return
+        log_extra(
+            self.coordinator.logger,
+            "progress_update_sent",
+            request_id=lifecycle.context.identity.key,
+            stage=stage,
+        )
+
+
+class StreamingResponder:
+    def __init__(self, coordinator: "ResponseUxCoordinator") -> None:
+        self.coordinator = coordinator
+
+    async def consume(self, lifecycle: ResponseUxLifecycle, text: str) -> None:
+        if lifecycle.streaming_disabled:
+            log_extra(
+                self.coordinator.logger,
+                "stream_chunk_skipped",
+                request_id=lifecycle.context.identity.key,
+                reason="disabled",
+            )
+            return
+        if not lifecycle.buffer_parts:
+            log_extra(
+                self.coordinator.logger,
+                "stream_started",
+                request_id=lifecycle.context.identity.key,
+                chat_id=lifecycle.context.target.chat_id,
+                thread_id=lifecycle.context.target.thread_id,
+            )
+        lifecycle.buffer_parts.append(text)
+        now = asyncio.get_running_loop().time()
+        if now - lifecycle.last_edit_at < self.coordinator.config.stream_edit_interval_seconds:
+            log_extra(
+                self.coordinator.logger,
+                "stream_chunk_skipped",
+                request_id=lifecycle.context.identity.key,
+                reason="throttled",
+            )
+            return
+        lifecycle.last_edit_at = now
+        preview = self.coordinator._truncate_for_telegram(
+            f"[{lifecycle.context.workspace_name}] running\n\n{''.join(lifecycle.buffer_parts)}"
+        )
+        try:
+            await self.coordinator._edit_or_fallback(lifecycle, preview, reply_markup=INLINE_KEYBOARD)
+        except Exception:
+            lifecycle.streaming_disabled = True
+            self.coordinator.logger.exception("stream_failed")
+            log_extra(
+                self.coordinator.logger,
+                "stream_fallback_disabled",
+                request_id=lifecycle.context.identity.key,
+            )
+            return
+        log_extra(
+            self.coordinator.logger,
+            "stream_chunk_sent",
+            request_id=lifecycle.context.identity.key,
+            chunk_length=len(text),
+            message_length=len(preview),
+        )
 
 
 class ResponseUxCoordinator:
@@ -56,6 +197,9 @@ class ResponseUxCoordinator:
         self.telegram = telegram
         self.logger = logger
         self._lifecycles: dict[str, ResponseUxLifecycle] = {}
+        self._progress_aggregator = ProgressAggregator(logger)
+        self._progress_reporter = ProgressReporter(self)
+        self._streaming_responder = StreamingResponder(self)
 
     def _feature_support(self, chat_id: int) -> TelegramFeatureSupport:
         capabilities_for = getattr(self.telegram, "capabilities_for", None)
@@ -209,24 +353,27 @@ class ResponseUxCoordinator:
             except asyncio.TimeoutError:
                 continue
 
-    async def _handle_event(self, lifecycle: ResponseUxLifecycle, event: dict) -> None:
-        text = extract_display_text(event)
-        if not text:
-            if event.get("type") == "stderr" and event.get("message"):
-                text = f"[stderr] {event['message']}"
-            elif event.get("type") == "error" and event.get("message"):
-                text = f"[info] {event['message']}"
+    async def _handle_event(self, lifecycle: ResponseUxLifecycle, event: RunEvent) -> None:
+        if lifecycle.context.policy.allow_progress_updates:
+            stage = self._progress_aggregator.consume(event)
+            if stage is not None:
+                await self._progress_reporter.report(lifecycle, stage)
+        text = event.text
+        if event.kind == "stderr" and event.text:
+            text = f"[stderr] {event.text}"
+        elif event.kind == "error" and event.text:
+            text = f"[info] {event.text}"
         if not text:
             return
-        lifecycle.buffer_parts.append(text)
-        now = asyncio.get_running_loop().time()
-        if now - lifecycle.last_edit_at < self.config.stream_edit_interval_seconds:
+        if not lifecycle.context.policy.allow_streaming_text:
+            log_extra(
+                self.logger,
+                "stream_chunk_skipped",
+                request_id=lifecycle.context.identity.key,
+                reason="policy_disabled",
+            )
             return
-        lifecycle.last_edit_at = now
-        preview = self._truncate_for_telegram(
-            f"[{lifecycle.context.workspace_name}] running\n\n{''.join(lifecycle.buffer_parts)}"
-        )
-        await self._edit_or_fallback(lifecycle, preview, reply_markup=INLINE_KEYBOARD)
+        await self._streaming_responder.consume(lifecycle, text)
 
     async def _finalize(self, lifecycle: ResponseUxLifecycle, result: CodexRunResult) -> None:
         final_text = result.final_text or "(empty response)"
@@ -242,6 +389,13 @@ class ResponseUxCoordinator:
                 extra,
                 lifecycle.context.target.thread_id,
             )
+        log_extra(
+            self.logger,
+            "final_response_sent",
+            request_id=lifecycle.context.identity.key,
+            chunk_count=len(chunks),
+            ok=result.ok,
+        )
         if result.errors and not result.ok:
             error_text = self._truncate_for_telegram("Errors:\n" + "\n".join(result.errors[-20:]))
             await self.telegram.send_message(
@@ -251,6 +405,25 @@ class ResponseUxCoordinator:
             )
 
     async def _edit_or_fallback(self, lifecycle: ResponseUxLifecycle, text: str, *, reply_markup: str | None = None) -> None:
+        send_or_edit = getattr(self.telegram, "send_or_edit_message", None)
+        if send_or_edit is not None:
+            result = await send_or_edit(
+                chat_id=lifecycle.context.target.chat_id,
+                text=text,
+                thread_id=lifecycle.context.target.thread_id,
+                reply_to_message_id=lifecycle.context.target.reply_to_message_id,
+                reply_markup=reply_markup,
+                edit_message_id=lifecycle.current_message_id,
+            )
+            lifecycle.current_message_id = int(result.message["message_id"])
+            if result.mode == "send" and lifecycle.buffer_parts:
+                log_extra(
+                    self.logger,
+                    "stream_fallback_used",
+                    request_id=lifecycle.context.identity.key,
+                    fallback="send_message",
+                )
+            return
         if lifecycle.current_message_id is None:
             replacement = await self.telegram.send_message(
                 lifecycle.context.target.chat_id,
@@ -294,4 +467,10 @@ class ResponseUxCoordinator:
             current += line
         if current:
             chunks.append(current)
+        log_extra(
+            self.logger,
+            "message_length_split",
+            chunk_count=len(chunks),
+            total_length=len(text),
+        )
         return chunks

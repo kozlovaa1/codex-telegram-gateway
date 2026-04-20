@@ -13,11 +13,11 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 from uuid import uuid4
 
-from .models import CodexRunResult
+from .models import CodexRunResult, RunEvent
 
 
 LOGGER = logging.getLogger("codex_telegram_gateway.codex_adapter")
-EventCallback = Callable[[dict[str, Any]], Awaitable[None]]
+EventCallback = Callable[[RunEvent], Awaitable[None]]
 ProcessCallback = Callable[[Process], None]
 
 
@@ -65,6 +65,50 @@ def extract_display_text(event: dict[str, Any]) -> str:
     if event_type in {"error"} and isinstance(event.get("message"), str):
         candidates.append(str(event["message"]))
     return "".join(part for part in candidates if part).strip()
+
+
+def normalize_run_event(event: dict[str, Any], *, session_id: str | None = None) -> RunEvent | None:
+    raw_type = str(event.get("type", ""))
+    text = extract_display_text(event)
+    if raw_type == "thread.started" and isinstance(event.get("thread_id"), str):
+        return RunEvent(
+            kind="session_started",
+            raw_type=raw_type,
+            session_id=str(event["thread_id"]),
+            payload=event,
+        )
+    if raw_type == "error":
+        return RunEvent(
+            kind="error",
+            text=str(event.get("message", text)),
+            raw_type=raw_type,
+            session_id=session_id,
+            payload=event,
+        )
+    if raw_type == "stderr":
+        return RunEvent(
+            kind="stderr",
+            text=str(event.get("message", text)),
+            raw_type=raw_type,
+            session_id=session_id,
+            payload=event,
+        )
+    if text:
+        return RunEvent(
+            kind="text_delta",
+            text=text,
+            raw_type=raw_type or None,
+            session_id=session_id,
+            payload=event,
+        )
+    if raw_type:
+        return RunEvent(
+            kind="lifecycle",
+            raw_type=raw_type,
+            session_id=session_id,
+            payload=event,
+        )
+    return None
 
 
 class CodexAdapter:
@@ -175,11 +219,12 @@ class CodexAdapter:
                 raw_events.append(event)
                 if event.get("type") == "thread.started" and isinstance(event.get("thread_id"), str):
                     seen_session_id = event["thread_id"]
-                text = extract_display_text(event)
-                if text and event.get("type") not in {"error", "turn.started"}:
-                    final_text_parts.append(text)
+                normalized_event = normalize_run_event(event, session_id=seen_session_id)
+                if normalized_event and normalized_event.kind == "text_delta":
+                    final_text_parts.append(normalized_event.text)
                 if on_event:
-                    await on_event(event)
+                    if normalized_event is not None:
+                        await on_event(normalized_event)
 
         async def read_stderr() -> None:
             assert proc.stderr is not None
@@ -188,7 +233,15 @@ class CodexAdapter:
                 if line:
                     errors.append(line)
                     if on_event:
-                        await on_event({"type": "stderr", "message": line})
+                        await on_event(
+                            RunEvent(
+                                kind="stderr",
+                                text=line,
+                                raw_type="stderr",
+                                session_id=seen_session_id,
+                                payload={"type": "stderr", "message": line},
+                            )
+                        )
 
         readers = [asyncio.create_task(read_stdout()), asyncio.create_task(read_stderr())]
         try:

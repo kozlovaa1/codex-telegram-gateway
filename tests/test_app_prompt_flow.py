@@ -16,6 +16,7 @@ from codex_telegram_gateway.config import (
     default_response_ux_settings,
 )
 from codex_telegram_gateway.models import ChatScope, CodexRunResult
+from codex_telegram_gateway.models import RunEvent
 from codex_telegram_gateway.telegram_api import TelegramApiError
 from codex_telegram_gateway.workspace_preflight import PreflightDiagnostic, WorkspacePreflightError, WorkspacePreflightResult
 from codex_telegram_gateway.workspace_store import WorkspaceStore
@@ -164,7 +165,7 @@ class AppPromptFlowTests(unittest.IsolatedAsyncioTestCase):
             store = WorkspaceStore(config.sqlite_path, config.workspace_defaults, None, "workspace-write", "never")
             store.initialize()
             telegram = FakeTelegram()
-            sessions = FakeSessions(events=[{"type": "message.delta", "text": "partial"}])
+            sessions = FakeSessions(events=[RunEvent(kind="text_delta", text="partial", raw_type="message.delta")])
             app = GatewayApp(config, store, sessions, telegram, logging.getLogger("test"))
 
             await app._handle_prompt(ChatScope(chat_id=1, thread_id=None), 7, 1, None, 42, "hello", chat_type="private")
@@ -182,8 +183,8 @@ class AppPromptFlowTests(unittest.IsolatedAsyncioTestCase):
             telegram = FakeTelegram()
             sessions = FakeSessions(
                 events=[
-                    {"type": "message.delta", "text": "first"},
-                    {"type": "message.delta", "text": "second"},
+                    RunEvent(kind="text_delta", text="first", raw_type="message.delta"),
+                    RunEvent(kind="text_delta", text="second", raw_type="message.delta"),
                 ]
             )
             app = GatewayApp(config, store, sessions, telegram, logging.getLogger("test"))
@@ -252,7 +253,7 @@ class AppPromptFlowTests(unittest.IsolatedAsyncioTestCase):
             telegram = FakeTelegram(fail_edits=True)
             sessions = FakeSessions(
                 result=CodexRunResult(True, "done", "session-1", 0, 0.1, [], []),
-                events=[{"type": "message.delta", "text": "partial"}],
+                events=[RunEvent(kind="text_delta", text="partial", raw_type="message.delta")],
             )
             app = GatewayApp(config, store, sessions, telegram, logging.getLogger("test"))
 

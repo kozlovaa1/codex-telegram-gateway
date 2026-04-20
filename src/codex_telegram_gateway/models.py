@@ -184,6 +184,15 @@ class CodexRunResult:
     raw_events: list[dict[str, Any]]
 
 
+@dataclass(frozen=True, slots=True)
+class RunEvent:
+    kind: str
+    text: str = ""
+    raw_type: str | None = None
+    session_id: str | None = None
+    payload: dict[str, Any] | None = None
+
+
 @dataclass(slots=True)
 class QueuedRequest:
     scope: ChatScope

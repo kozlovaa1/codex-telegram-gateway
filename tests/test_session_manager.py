@@ -8,7 +8,7 @@ from pathlib import Path
 
 from codex_telegram_gateway.config import AdminOnlySettings, AppConfig, ExecutionProfile, TelegramSettings, default_response_ux_settings
 from codex_telegram_gateway.execution_policy import ExecutionPolicyResolver
-from codex_telegram_gateway.models import CodexRunResult
+from codex_telegram_gateway.models import CodexRunResult, RunEvent
 from codex_telegram_gateway.session_manager import SessionManager
 from codex_telegram_gateway.workspace_preflight import (
     PreflightDiagnostic,
@@ -33,7 +33,7 @@ class FakeAdapter:
         if on_process:
             on_process(FakeProcess())
         if on_event:
-            await on_event({"type": "message.delta", "text": f"reply:{prompt}"})
+            await on_event(RunEvent(kind="text_delta", text=f"reply:{prompt}", raw_type="message.delta"))
         return (
             CodexRunResult(
                 ok=True,
@@ -129,7 +129,7 @@ class SessionManagerTests(unittest.IsolatedAsyncioTestCase):
             seen: list[str] = []
 
             async def on_event(event):
-                seen.append(event["text"])
+                seen.append(event.text)
 
             result = await manager.execute("demo", "/srv/projects/demo", 1, "hello", on_event)
             self.assertTrue(result.ok)
@@ -277,6 +277,24 @@ class SessionManagerTests(unittest.IsolatedAsyncioTestCase):
 
             session = store.get_session("demo")
             self.assertEqual(session.session_id, "session-1")
+
+    async def test_execute_invokes_cleanup_callback_with_completion_reason(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = WorkspaceStore(Path(tmp) / "db.sqlite3", {"demo": "/srv/projects/demo"}, None, "workspace-write", "never")
+            store.initialize()
+            adapter = FakeAdapter()
+            manager = SessionManager(store, adapter, logging.getLogger("test"), 1.0, 3600, 4, 1, 4)
+            reasons: list[str] = []
+
+            async def on_event(event):
+                return None
+
+            async def on_cleanup(reason: str) -> None:
+                reasons.append(reason)
+
+            await manager.execute("demo", "/srv/projects/demo", 1, "hello", on_event, cleanup_callback=on_cleanup)
+
+            self.assertEqual(reasons, ["completed"])
 
 
 if __name__ == "__main__":
