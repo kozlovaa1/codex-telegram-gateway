@@ -8,7 +8,9 @@ Telegram-обвязка для `Codex CLI`, где каждый Telegram chat/to
 - `chat_id + topic/thread_id -> workspace`.
 - отдельная Codex-сессия на workspace через `codex exec` и `codex exec resume`.
 - SQLite для mapping и session state.
+- execution profiles и workspace-scoped policy overrides для sandbox, approvals и network mode.
 - безопасная валидация путей по whitelist roots.
+- preflight-проверка workspace перед запуском или restart сессии.
 - базовые inline-кнопки: `Status`, `Where`, `Reset Session`.
 - настраиваемый `default workspace` для непривязанных чатов.
 - поддержка Telegram forum topics: `/use` в forum-группе создаёт новую тему с отдельной Codex-сессией.
@@ -50,27 +52,75 @@ Telegram-обвязка для `Codex CLI`, где каждый Telegram chat/to
 - bind path проходит `resolve(strict=True)` и проверку на выход за разрешённые roots;
 - разрешённые roots задаются в `config.toml`;
 - `/bind` ограничен admin user ids;
-- `/approvals` разрешает только `never` и `untrusted`;
-- `/execmode` разрешает только `read-only` и `workspace-write`;
+- execution profiles задают sandbox, approvals, network mode и command rule group на workspace;
+- `/approvals`, `/execmode` и privileged profile transitions централизованно проверяются policy layer;
+- gateway сам отклоняет команды, которые нарушают command rule group для текущего profile;
 - режим `dangerously-bypass-approvals-and-sandbox` не используется;
+- `break-glass` существует как временный профиль с TTL, а не как постоянный default;
+- network mode и approvals рассматриваются как gateway-owned policy, даже если Codex CLI не умеет выразить их отдельными флагами;
 - секреты лежат в `.env`, в логи не попадают.
 - если `OPENAI_API_KEY` не задан, сервис копирует `auth.json` из `codex_auth_source_home` в свой runtime-home и использует существующий ChatGPT/Codex login.
+
+## Execution Profiles
+
+Поддерживаются три базовых profile:
+
+- `default` : безопасный профиль по умолчанию для обычных project/workspace запросов.
+- `ops` : более привилегированный профиль для controlled operational workspaces вроде `/srv/infra`.
+- `break-glass` : временный аварийный профиль с TTL для исключительных случаев.
+
+Порядок применения policy детерминированный:
+
+1. profile default
+2. workspace profile default
+3. durable workspace override
+4. temporary break-glass override
+
+Что хранится в SQLite:
+
+- `profile_name`
+- `sandbox_mode`
+- `approval_policy`
+- `network_mode`
+- `command_rule_set_version`
+- `break_glass_expires_at`
+- busy/idle state, `last_stop_reason`, `last_restart_at`, `last_used_at`
+
+Что вычисляется на лету:
+
+- effective command rule group
+- effective admin eligibility для requested transition
+- active break-glass overlay при ещё не истёкшем TTL
+
+## Workspace Preflight
+
+Перед запуском или restart сессии gateway делает preflight:
+
+- проверяет canonical path и выход за `allowed_roots`
+- отклоняет symlink escape и traversal
+- проверяет read/write доступ для service user
+- создаёт `.codex` внутри workspace при необходимости
+- выполняет create/delete probe и возвращает диагностический reason в Telegram и logs
 
 ## Команды
 
 - `/start` : показывает стартовое сообщение, текущий workspace и базовые подсказки.
 - `/help` : показывает список доступных команд.
 - `/status` : показывает текущий workspace, session id, режим sandbox, approvals и занятость сессии.
+- `/session show` : показывает profile, session id, sandbox, approvals, network mode, rule set, busy status и uptime.
 - `/where` : показывает, какой workspace привязан к текущему chat/topic.
 - `/workspaces` : показывает доступные workspace aliases и авто-алиасы `project:<name>`.
 - `/bind <name> <path>` : создаёт или обновляет alias workspace на абсолютный путь и привязывает его к текущему chat/topic. Команда доступна только admin user.
 - `/use <name>` : переключает текущий chat/topic на выбранный workspace. В chats with topics создаёт новый topic с отдельной Codex-сессией.
+- `/session profile <name>` : меняет execution profile для текущего workspace и переводит следующий run на новую fresh session.
+- `/session restart` : завершает текущую session state и готовит fresh session для следующего run.
+- `/session reset` : алиас на reset текущей session state.
 - `/newsession` : сбрасывает текущий session id для workspace и начинает новый контекст.
 - `/resetsession` : то же, что `/newsession`.
 - `/stop` : останавливает текущий активный run Codex для этого workspace.
 - `/pwd` : краткий алиас для `/where`.
-- `/execmode [readonly|workspace-write]` : показывает или меняет sandbox mode для текущего workspace.
-- `/approvals [never|untrusted]` : показывает или меняет approval policy для текущего workspace.
+- `/execmode [readonly|workspace-write]` : legacy alias для sandbox override. После смены следующая session будет fresh.
+- `/approvals [never|untrusted]` : legacy alias для approval override. После смены следующая session будет fresh.
 - `/model [name]` : показывает текущую модель или задаёт новую для workspace.
 - `/debugstatus` : показывает внутреннюю диагностику gateway и активные runtime. Команда доступна только admin user.
 
@@ -211,11 +261,12 @@ openclaw = "/absolute/path/to/openclaw"
 ## Изоляция
 
 - binding хранится на уровне `chat_id + thread_id`;
-- session state хранится на уровне `workspace_name`;
+- execution policy и session state хранятся на уровне `workspace_name`;
 - одновременные запросы в один workspace сериализуются через `asyncio.Lock`;
 - для каждого запроса создаётся отдельный `codex` subprocess;
 - активный процесс можно прервать через `/stop`;
-- `session_id` можно сбросить через `/resetsession`.
+- `session_id` нормализуется к `NULL`, а не к пустой строке;
+- profile change, `/session restart`, `/session reset`, `/execmode` и `/approvals` приводят к fresh session для следующего run.
 
 ## Логи и диагностика
 
@@ -223,6 +274,26 @@ openclaw = "/absolute/path/to/openclaw"
 - входящие Telegram updates логируются
 - запуск/завершение Codex runs логируется
 - `/status` и `/debugstatus` помогают понять состояние
+
+Основные audit events:
+
+- `config_validation_started`, `config_validation_succeeded`
+- `workspace_store_migration_started`, `workspace_store_migration_finished`
+- `policy_services_bootstrapped`
+- `admin_denied`, `privileged_transition_allowed`
+- `session_start`, `session_stop`, `session_restart`
+- `workspace_busy_conflict`
+- `break_glass_active`, `break_glass_expired`
+- `preflight_failed`
+- `command_rule_violation`
+
+Как их интерпретировать:
+
+- `admin_denied` значит, что Telegram command был отклонён policy layer до изменения state.
+- `workspace_busy_conflict` значит, что profile/policy transition запросили во время активного run.
+- `preflight_failed` значит, что workspace не прошёл filesystem safety/readiness checks.
+- `command_rule_violation` значит, что gateway отклонил prompt до запуска `codex exec`.
+- `break_glass_expired` значит, что временный аварийный профиль снят и effective policy вернулась к менее привилегированному baseline.
 
 ## Тесты
 
@@ -238,6 +309,9 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 - Если Codex падает сразу, проверить `codex_bin`, credentials и права на `runtime_dir`.
 - Если используется ChatGPT login без API key, проверить наличие `${codex_auth_source_home}/auth.json` и права на чтение этого файла.
 - Если `/bind` отклоняется, проверить canonical path и `allowed_roots`.
+- Если run не стартует и бот пишет про preflight, проверить права service user на workspace, `.codex` и create/delete probe.
+- Если `/session profile break-glass` или другие privileged transitions отклоняются, проверить `TELEGRAM_ADMIN_IDS` и секцию `admin_only` в `config.toml`.
+- Если ops workspace ожидаемо требует другой policy, проверить `workspace_profile_defaults`, `execution_profiles` и `command_rule_groups`.
 - Если в группе не видны сообщения, проверить privacy mode бота.
 
 ## Ограничения MVP

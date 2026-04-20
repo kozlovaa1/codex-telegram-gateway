@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from codex_telegram_gateway.app import GatewayApp, display_workspace_name, make_session_workspace_name, supports_topic_creation
-from codex_telegram_gateway.config import AppConfig, TelegramSettings
+from codex_telegram_gateway.config import AdminOnlySettings, AppConfig, ExecutionProfile, TelegramSettings
 from codex_telegram_gateway.models import ChatScope
 from codex_telegram_gateway.workspace_store import WorkspaceStore
 
@@ -50,6 +50,7 @@ class AppDefaultWorkspaceTests(unittest.TestCase):
                 default_model=None,
                 default_sandbox_mode="workspace-write",
                 default_approval_policy="never",
+                default_network_mode="restricted",
                 session_idle_ttl_seconds=60,
                 command_timeout_seconds=60,
                 process_kill_grace_seconds=1,
@@ -62,6 +63,27 @@ class AppDefaultWorkspaceTests(unittest.TestCase):
                 allowed_roots=[Path("/srv/projects")],
                 project_alias_roots=[Path("/srv/projects")],
                 workspace_defaults={"server-ops": "/srv/projects"},
+                workspace_profile_defaults={"server-ops": "default"},
+                execution_profiles={
+                    "default": ExecutionProfile(
+                        name="default",
+                        sandbox_mode="workspace-write",
+                        approval_policy="never",
+                        network_mode="restricted",
+                        command_rule_group="default",
+                        admin_only=False,
+                    )
+                },
+                command_rule_groups={"default": ("workspace-safe",)},
+                admin_only=AdminOnlySettings(
+                    bind=True,
+                    use=False,
+                    execmode=True,
+                    approvals=True,
+                    break_glass=True,
+                    command_rule_overrides=True,
+                ),
+                break_glass_ttl_seconds=1800,
                 telegram=TelegramSettings(True, True, True),
             )
             app = GatewayApp(config, store, DummySessions(), DummyTelegram(), logging.getLogger("test"))

@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import shutil
 import signal
 import time
 from asyncio.subprocess import Process
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 from uuid import uuid4
@@ -14,8 +16,32 @@ from uuid import uuid4
 from .models import CodexRunResult
 
 
+LOGGER = logging.getLogger("codex_telegram_gateway.codex_adapter")
 EventCallback = Callable[[dict[str, Any]], Awaitable[None]]
 ProcessCallback = Callable[[Process], None]
+
+
+@dataclass(frozen=True, slots=True)
+class AdapterCapabilityMatrix:
+    sandbox_via_cli: bool = True
+    model_via_cli: bool = True
+    approval_via_cli: bool = False
+    network_via_cli: bool = False
+    command_rules_via_gateway: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedRunPolicy:
+    profile_name: str
+    sandbox_mode: str
+    approval_policy: str
+    network_mode: str
+    command_rule_group: str
+    command_rules: tuple[str, ...]
+
+
+class PolicyEnforcementError(RuntimeError):
+    pass
 
 
 def extract_display_text(event: dict[str, Any]) -> str:
@@ -55,6 +81,7 @@ class CodexAdapter:
         self.timeout_seconds = timeout_seconds
         self.kill_grace_seconds = kill_grace_seconds
         self.auth_source_home = auth_source_home
+        self.capabilities = AdapterCapabilityMatrix()
 
     def runtime_home(self) -> Path:
         return self.runtime_dir / "home"
@@ -104,31 +131,22 @@ class CodexAdapter:
         prompt: str,
         session_id: str | None,
         model: str | None,
-        sandbox_mode: str,
-        approval_policy: str,
+        policy: ResolvedRunPolicy,
         on_event: EventCallback | None = None,
         on_process: ProcessCallback | None = None,
     ) -> tuple[CodexRunResult, Process]:
         self.prepare_runtime_home()
         output_last_message = self.runtime_dir / "output" / f"{uuid4()}.txt"
-        cmd = [
-            self.codex_bin,
-            "exec",
-            "--json",
-            "--skip-git-repo-check",
-            "--cd",
-            workspace_path,
-            "--sandbox",
-            sandbox_mode,
-            "--output-last-message",
-            str(output_last_message),
-        ]
-        if model:
-            cmd.extend(["--model", model])
-        if session_id:
-            cmd.extend(["resume", session_id, prompt])
-        else:
-            cmd.append(prompt)
+        self._validate_policy(policy)
+        self._enforce_command_rules(prompt, workspace_path, policy)
+        cmd = self.build_command(
+            workspace_path=workspace_path,
+            prompt=prompt,
+            session_id=session_id,
+            model=model,
+            sandbox_mode=policy.sandbox_mode,
+            output_last_message=output_last_message,
+        )
         started = time.monotonic()
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -199,6 +217,82 @@ class CodexAdapter:
             raw_events=raw_events,
         )
         return result, proc
+
+    def build_command(
+        self,
+        *,
+        workspace_path: str,
+        prompt: str,
+        session_id: str | None,
+        model: str | None,
+        sandbox_mode: str,
+        output_last_message: Path,
+    ) -> list[str]:
+        cmd = [
+            self.codex_bin,
+            "exec",
+            "--json",
+            "--skip-git-repo-check",
+            "--cd",
+            workspace_path,
+            "--sandbox",
+            sandbox_mode,
+            "--output-last-message",
+            str(output_last_message),
+        ]
+        if model:
+            cmd.extend(["--model", model])
+        if session_id:
+            cmd.extend(["resume", session_id, prompt])
+        else:
+            cmd.append(prompt)
+        return cmd
+
+    def _validate_policy(self, policy: ResolvedRunPolicy) -> None:
+        if policy.network_mode not in {"restricted", "enabled"}:
+            raise PolicyEnforcementError(f"Unsupported network mode: {policy.network_mode}")
+        if not self.capabilities.approval_via_cli and policy.approval_policy not in {"never", "untrusted", "on-request", "on-failure"}:
+            raise PolicyEnforcementError(f"Unsupported approval policy: {policy.approval_policy}")
+        if not self.capabilities.network_via_cli and policy.network_mode == "enabled":
+            LOGGER.info(
+                "adapter_policy_capability_fallback",
+                extra={
+                    "extra_fields": {
+                        "control": "network_mode",
+                        "mode": policy.network_mode,
+                        "enforcement": "gateway-policy-only",
+                    }
+                },
+            )
+
+    def _enforce_command_rules(self, prompt: str, workspace_path: str, policy: ResolvedRunPolicy) -> None:
+        lowered = prompt.lower()
+        matched_rule: str | None = None
+        if policy.command_rule_group == "default":
+            for fragment in ("sudo ", "systemctl ", "journalctl ", "docker ", "kubectl ", "ssh ", "scp ", "rm -rf", "/etc/", "/var/"):
+                if fragment in lowered:
+                    matched_rule = fragment.strip()
+                    break
+        elif policy.command_rule_group == "ops":
+            for fragment in ("sudo ", "mount ", "umount ", "iptables ", "ufw ", "shutdown", "reboot", "useradd ", "passwd "):
+                if fragment in lowered:
+                    matched_rule = fragment.strip()
+                    break
+        if matched_rule is None:
+            return
+        LOGGER.warning(
+            "command_rule_violation",
+            extra={
+                "extra_fields": {
+                    "workspace_path": workspace_path,
+                    "command_rule_group": policy.command_rule_group,
+                    "matched_rule": matched_rule,
+                }
+            },
+        )
+        raise PolicyEnforcementError(
+            f"Prompt violates command rules for group {policy.command_rule_group}: {matched_rule}"
+        )
 
     async def _terminate(self, proc: Process) -> None:
         if proc.returncode is not None:

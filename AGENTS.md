@@ -22,12 +22,14 @@
 │   ├── app.py                       # Telegram update handling and slash commands
 │   ├── codex_adapter.py             # Codex subprocess execution and streaming
 │   ├── config.py                    # TOML and environment config loading
+│   ├── execution_policy.py          # Workspace execution policy resolution and authorization
 │   ├── logging_utils.py             # Structured JSON logging helpers
 │   ├── models.py                    # Shared data records
 │   ├── path_security.py             # Canonical path allowlist checks
 │   ├── rate_limit.py                # Per-user rate limiting
 │   ├── session_manager.py           # Per-workspace serialization and queueing
 │   ├── telegram_api.py              # Telegram Bot API wrapper
+│   ├── workspace_preflight.py       # Workspace filesystem preflight diagnostics
 │   └── workspace_store.py           # SQLite persistence for workspaces and sessions
 ├── tests/                           # Unit tests for core gateway behavior
 ├── systemd/                         # Example service unit
@@ -45,6 +47,8 @@
 | `src/codex_telegram_gateway/__main__.py` | Starts the gateway process |
 | `src/codex_telegram_gateway/app.py` | Main Telegram command and routing logic |
 | `src/codex_telegram_gateway/codex_adapter.py` | Launches `codex exec` and `codex exec resume` |
+| `src/codex_telegram_gateway/execution_policy.py` | Resolves effective execution profile and centralized admin checks |
+| `src/codex_telegram_gateway/workspace_preflight.py` | Validates workspace readiness before session start/restart |
 | `src/codex_telegram_gateway/workspace_store.py` | Persists workspace bindings and sessions |
 | `config.toml` | Runtime paths, Codex options, and workspace defaults |
 | `.env` | Secrets such as Telegram token and optional API key |
@@ -70,6 +74,7 @@
 
 - one `chat_id + thread_id` maps to one workspace binding
 - each workspace keeps its own Codex session id
+- each workspace keeps its own execution policy and busy/idle session state
 - requests are executed through separate `codex exec` or `codex exec resume` subprocesses
 - session context must not be mixed across chats or topics
 - long polling is used instead of webhooks
@@ -85,14 +90,20 @@
   - launches `codex exec`
   - streams JSON events
   - reads final assistant output from `--output-last-message`
+- `src/codex_telegram_gateway/execution_policy.py`
+  - resolves effective profile for each workspace
+  - applies precedence between defaults, durable overrides, and break-glass
+  - centralizes admin-only authorization for privileged transitions
 - `src/codex_telegram_gateway/workspace_store.py`
-  - SQLite storage for workspaces, bindings, and sessions
+  - SQLite storage for workspaces, bindings, execution policies, and session state
 - `src/codex_telegram_gateway/session_manager.py`
   - per-workspace serialization
   - queue limiting
-  - stop and reset behavior
+  - start, stop, restart, and policy-change behavior
 - `src/codex_telegram_gateway/path_security.py`
   - canonical path validation against `allowed_roots`
+- `src/codex_telegram_gateway/workspace_preflight.py`
+  - canonical-path and filesystem readiness checks before execution
 - `src/codex_telegram_gateway/telegram_api.py`
   - Telegram Bot API wrapper
 
@@ -108,6 +119,9 @@ Runtime configuration:
   - paths
   - allowed roots
   - workspace defaults
+  - execution profiles
+  - admin-only command switches
+  - break-glass TTL
   - default workspace
   - Codex runtime settings
 
@@ -147,6 +161,8 @@ Gateway uses `codex exec` in non-interactive mode.
 Important details:
 
 - do not pass `--ask-for-approval` to `codex exec`
+- sandbox is passed to Codex CLI only through confirmed compatible flags
+- approvals, network mode, and command rules are enforced gateway-side first
 - final assistant message is captured through `--output-last-message`
 - JSON output is used for progress and status streaming, not as the only source of the final answer
 - sandbox mode is passed through `--sandbox`
@@ -163,9 +179,13 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 Current coverage focuses on:
 
 - path validation
-- workspace and session store behavior
+- workspace policy/session store behavior and migration
 - default workspace resolution
+- execution-policy resolution and admin authorization
+- workspace preflight diagnostics
+- session restart/profile lifecycle and legacy command compatibility
 - topic and session naming helpers
+- bootstrap wiring for policy and preflight services
 - auth fallback behavior
 
 ## Systemd

@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from codex_telegram_gateway.codex_adapter import CodexAdapter
+from codex_telegram_gateway.codex_adapter import CodexAdapter, PolicyEnforcementError, ResolvedRunPolicy
 
 
 class CodexAdapterTests(unittest.TestCase):
@@ -59,6 +59,71 @@ class CodexAdapterTests(unittest.TestCase):
                     os.environ.pop("OPENAI_API_KEY", None)
                 else:
                     os.environ["OPENAI_API_KEY"] = previous
+
+    def test_build_command_uses_resume_and_supported_flags_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime_dir = Path(tmp) / "runtime"
+            adapter = CodexAdapter(
+                codex_bin="/bin/codex",
+                runtime_dir=runtime_dir,
+                timeout_seconds=10,
+                kill_grace_seconds=1,
+            )
+
+            command = adapter.build_command(
+                workspace_path="/srv/projects/demo",
+                prompt="hello",
+                session_id="session-1",
+                model="gpt-5",
+                sandbox_mode="workspace-write",
+                output_last_message=runtime_dir / "output" / "last.txt",
+            )
+
+            self.assertEqual(
+                command,
+                [
+                    "/bin/codex",
+                    "exec",
+                    "--json",
+                    "--skip-git-repo-check",
+                    "--cd",
+                    "/srv/projects/demo",
+                    "--sandbox",
+                    "workspace-write",
+                    "--output-last-message",
+                    str(runtime_dir / "output" / "last.txt"),
+                    "--model",
+                    "gpt-5",
+                    "resume",
+                    "session-1",
+                    "hello",
+                ],
+            )
+            self.assertNotIn("--ask-for-approval", command)
+
+    def test_command_rule_violation_is_rejected_by_gateway(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime_dir = Path(tmp) / "runtime"
+            adapter = CodexAdapter(
+                codex_bin="/bin/codex",
+                runtime_dir=runtime_dir,
+                timeout_seconds=10,
+                kill_grace_seconds=1,
+            )
+
+            with self.assertRaises(PolicyEnforcementError):
+                adapter._enforce_command_rules(
+                    "please run sudo systemctl restart nginx",
+                    "/srv/projects/demo",
+                    ResolvedRunPolicy(
+                        profile_name="default",
+                        sandbox_mode="workspace-write",
+                        approval_policy="never",
+                        network_mode="restricted",
+                        command_rule_group="default",
+                        command_rules=("workspace-safe",),
+                    ),
+                )
 
 
 if __name__ == "__main__":

@@ -37,6 +37,10 @@ default_model = ""
 # Safe-by-default execution settings.
 default_sandbox_mode = "workspace-write"
 default_approval_policy = "never"
+default_network_mode = "restricted"
+
+# Break-glass elevation auto-expires and must be renewed explicitly.
+break_glass_ttl_seconds = 1800
 
 # Session/process lifecycle.
 session_idle_ttl_seconds = 21600
@@ -64,6 +68,46 @@ project_alias_roots = ["/absolute/path/to/projects"]
 infra = "/absolute/path/to/infra"
 openclaw = "/absolute/path/to/openclaw"
 server-ops = "/absolute/path/for/general-ops"
+
+[workspace_profile_defaults]
+# Optional workspace-scoped execution profile defaults.
+server-ops = "default"
+infra = "ops"
+
+[admin_only]
+# Privileged Telegram controls can be hardened independently.
+bind = true
+use = false
+execmode = true
+approvals = true
+break_glass = true
+command_rule_overrides = true
+
+[command_rule_groups]
+default = ["workspace-safe"]
+ops = ["workspace-safe", "ops-read", "ops-write"]
+break-glass = ["workspace-safe", "ops-read", "ops-write", "break-glass"]
+
+[execution_profiles.default]
+sandbox_mode = "workspace-write"
+approval_policy = "never"
+network_mode = "restricted"
+command_rule_group = "default"
+admin_only = false
+
+[execution_profiles.ops]
+sandbox_mode = "workspace-write"
+approval_policy = "on-request"
+network_mode = "restricted"
+command_rule_group = "ops"
+admin_only = true
+
+[execution_profiles.break-glass]
+sandbox_mode = "danger-full-access"
+approval_policy = "never"
+network_mode = "enabled"
+command_rule_group = "break-glass"
+admin_only = true
 
 [telegram]
 # Chat types accepted by the bot.

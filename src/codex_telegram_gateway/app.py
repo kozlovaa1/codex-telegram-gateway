@@ -8,12 +8,15 @@ import textwrap
 from datetime import UTC, datetime
 
 from .config import AppConfig
+from .codex_adapter import PolicyEnforcementError
+from .execution_policy import ExecutionPolicyResolver, PolicyAuthorizationError
 from .logging_utils import log_extra
 from .models import ChatScope
 from .path_security import PathSecurityError, resolve_workspace_path
 from .rate_limit import RateLimiter
 from .session_manager import SessionManager
 from .telegram_api import TelegramApi, TelegramApiError
+from .workspace_preflight import WorkspacePreflightError
 from .workspace_store import WorkspaceStore
 
 
@@ -52,12 +55,21 @@ def supports_topic_creation(chat_type: str | None, is_forum: bool) -> bool:
 
 
 class GatewayApp:
-    def __init__(self, config: AppConfig, store: WorkspaceStore, sessions: SessionManager, telegram: TelegramApi, logger: logging.Logger) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        store: WorkspaceStore,
+        sessions: SessionManager,
+        telegram: TelegramApi,
+        logger: logging.Logger,
+        policy_resolver: ExecutionPolicyResolver | None = None,
+    ) -> None:
         self.config = config
         self.store = store
         self.sessions = sessions
         self.telegram = telegram
         self.logger = logger
+        self.policy_resolver = policy_resolver
         self.rate_limiter = RateLimiter(
             config.per_user_rate_limit_window_seconds,
             config.per_user_rate_limit_max_messages,
@@ -99,7 +111,7 @@ class GatewayApp:
         )
         if data == "status":
             await self.telegram.answer_callback_query(callback["id"], "Status")
-            await self._send_status(scope, message["chat"]["id"], message.get("message_thread_id"))
+            await self._send_status(scope, message["chat"]["id"], message.get("message_thread_id"), user_id=callback["from"]["id"])
         elif data == "where":
             await self.telegram.answer_callback_query(callback["id"], "Workspace")
             await self._send_where(scope, message["chat"]["id"], message.get("message_thread_id"))
@@ -199,7 +211,9 @@ class GatewayApp:
         elif command == "/bind":
             await self._bind(scope, user_id, chat_id, thread_id, args)
         elif command == "/use":
-            await self._use(scope, chat_id, thread_id, args, chat_type=chat_type, is_forum=is_forum)
+            await self._use(scope, user_id, chat_id, thread_id, args, chat_type=chat_type, is_forum=is_forum)
+        elif command == "/session":
+            await self._session_command(scope, user_id, chat_id, thread_id, args)
         elif command in {"/newsession", "/resetsession"}:
             await self._reset_session(scope, user_id, chat_id, thread_id)
         elif command == "/stop":
@@ -207,9 +221,9 @@ class GatewayApp:
         elif command == "/model":
             await self._set_model(scope, chat_id, thread_id, args)
         elif command == "/execmode":
-            await self._set_execmode(scope, chat_id, thread_id, args)
+            await self._set_execmode(scope, user_id, chat_id, thread_id, args)
         elif command == "/approvals":
-            await self._set_approvals(scope, chat_id, thread_id, args)
+            await self._set_approvals(scope, user_id, chat_id, thread_id, args)
         elif command == "/debugstatus":
             if not self._is_admin(user_id):
                 await self.telegram.send_message(chat_id, "Admin only.", thread_id)
@@ -229,6 +243,7 @@ class GatewayApp:
             /workspaces
             /bind <name> <path>   admin only
             /use <name>
+            /session [show|profile <name>|restart|reset]
             /newsession
             /resetsession
             /stop
@@ -241,9 +256,6 @@ class GatewayApp:
         ).strip()
 
     async def _bind(self, scope: ChatScope, user_id: int, chat_id: int, thread_id: int | None, args: list[str]) -> None:
-        if self.config.trusted_admin_only_bind and not self._is_admin(user_id):
-            await self.telegram.send_message(chat_id, "Admin only.", thread_id)
-            return
         if len(args) != 2:
             await self.telegram.send_message(chat_id, "Usage: /bind <name> <path>", thread_id)
             return
@@ -253,11 +265,16 @@ class GatewayApp:
         except PathSecurityError as exc:
             await self.telegram.send_message(chat_id, f"Bind rejected: {exc}", thread_id)
             return
+        try:
+            self._authorize_command("bind", user_id, workspace_name=name, workspace_path=str(resolved))
+        except PolicyAuthorizationError as exc:
+            await self.telegram.send_message(chat_id, str(exc), thread_id)
+            return
         self.store.upsert_workspace(name, str(resolved))
         self.store.bind_scope(scope, name)
         await self.telegram.send_message(chat_id, f"Bound to `{name}` -> {resolved}", thread_id)
 
-    async def _use(self, scope: ChatScope, chat_id: int, thread_id: int | None, args: list[str], chat_type: str | None = None, is_forum: bool = False) -> None:
+    async def _use(self, scope: ChatScope, user_id: int, chat_id: int, thread_id: int | None, args: list[str], chat_type: str | None = None, is_forum: bool = False) -> None:
         if len(args) != 1:
             await self.telegram.send_message(chat_id, "Usage: /use <name>", thread_id)
             return
@@ -267,6 +284,11 @@ class GatewayApp:
         path = available.get(name)
         if not path:
             await self.telegram.send_message(chat_id, f"Unknown workspace: {name}", thread_id)
+            return
+        try:
+            self._authorize_command("use", user_id, workspace_name=name, workspace_path=path)
+        except PolicyAuthorizationError as exc:
+            await self.telegram.send_message(chat_id, str(exc), thread_id)
             return
         if supports_topic_creation(chat_type, is_forum):
             topic_title = f"{name} | {datetime.now(UTC).strftime('%Y-%m-%d %H:%M')}"
@@ -312,24 +334,45 @@ class GatewayApp:
         mode = "explicit" if binding else "default"
         await self.telegram.send_message(chat_id, f"Workspace: {display_workspace_name(name)}\nPath: {path}\nScope: {scope.key}\nBinding: {mode}", thread_id)
 
-    async def _send_status(self, scope: ChatScope, chat_id: int, thread_id: int | None) -> None:
+    async def _send_status(self, scope: ChatScope, chat_id: int, thread_id: int | None, user_id: int | None = None) -> None:
         resolved = self._workspace_from_scope(scope)
         if not resolved:
             await self.telegram.send_message(chat_id, "No workspace bound.", thread_id)
             return
         name, path = resolved
         session = self.store.get_session(name)
-        busy = any(item["workspace"] == name and item["busy"] for item in self.sessions.runtime_snapshot())
+        resolved_policy = None
+        if self.policy_resolver is not None:
+            resolved_policy = self.policy_resolver.resolve(
+                workspace_name=name,
+                workspace_path=path,
+                user_id=user_id or 0,
+                stored_policy=session.execution_policy,
+            )
+        runtime = next((item for item in self.sessions.runtime_snapshot() if item["workspace"] == name), None)
+        busy = bool(runtime and runtime["busy"])
+        runtime_seconds = int(runtime["runtime_seconds"]) if runtime else 0
+        active_profile = resolved_policy.profile_name if resolved_policy is not None else session.profile_name
+        active_sandbox = resolved_policy.sandbox_mode if resolved_policy is not None else session.sandbox_mode
+        active_approvals = resolved_policy.approval_policy if resolved_policy is not None else session.approval_policy
+        active_network = resolved_policy.network_mode if resolved_policy is not None else session.network_mode
+        rule_set = resolved_policy.command_rule_group if resolved_policy is not None else f"v{session.command_rule_set_version}"
         text = "\n".join(
             [
                 f"Workspace: {display_workspace_name(name)}",
                 f"Path: {path}",
+                f"Profile: {active_profile}",
                 f"Session: {session.session_id or 'new'}",
                 f"Busy: {'yes' if busy else 'no'}",
-                f"Mode: {session.sandbox_mode}",
-                f"Approvals: {session.approval_policy}",
+                f"Runtime: {runtime_seconds}s" if busy else "Runtime: idle",
+                f"Mode: {active_sandbox}",
+                f"Approvals: {active_approvals}",
+                f"Network: {active_network}",
+                f"Rule set: {rule_set}",
                 f"Model: {session.model or '(default)'}",
+                f"Break-glass expires: {session.break_glass_expires_at or 'inactive'}",
                 f"Last used: {session.last_used_at or 'never'}",
+                f"Last restart: {session.last_restart_at or 'never'}",
             ]
         )
         await self.telegram.send_message(chat_id, text, thread_id, reply_markup=INLINE_KEYBOARD)
@@ -339,11 +382,25 @@ class GatewayApp:
         if not resolved:
             await self.telegram.send_message(chat_id, "No workspace bound.", thread_id)
             return
-        name, _ = resolved
+        name, path = resolved
         if await self.sessions.stop_workspace(name):
             log_extra(self.logger, "codex.run.stopped", workspace=name, by_user=user_id)
-        self.store.update_session(name, session_id="", touch_last_used=False)
-        await self.telegram.send_message(chat_id, f"Session reset for {name}.", thread_id)
+        try:
+            await self.sessions.restart_workspace(name, path, reason="session_reset")
+        except WorkspacePreflightError as exc:
+            self.logger.warning(
+                "[FIX] session_reset_preflight_failed",
+                extra={
+                    "extra_fields": {
+                        "workspace_name": name,
+                        "workspace_path": path,
+                        "reason": exc.result.user_message,
+                    }
+                },
+            )
+            await self.telegram.send_message(chat_id, exc.result.user_message, thread_id)
+            return
+        await self.telegram.send_message(chat_id, f"Session reset for {display_workspace_name(name)}.", thread_id)
 
     async def _stop(self, scope: ChatScope, chat_id: int, thread_id: int | None) -> None:
         resolved = self._workspace_from_scope(scope)
@@ -368,12 +425,12 @@ class GatewayApp:
         self.store.update_session(name, model=model)
         await self.telegram.send_message(chat_id, f"Model set to {model}", thread_id)
 
-    async def _set_execmode(self, scope: ChatScope, chat_id: int, thread_id: int | None, args: list[str]) -> None:
+    async def _set_execmode(self, scope: ChatScope, user_id: int, chat_id: int, thread_id: int | None, args: list[str]) -> None:
         resolved = self._workspace_from_scope(scope)
         if not resolved:
             await self.telegram.send_message(chat_id, "No workspace bound.", thread_id)
             return
-        name, _ = resolved
+        name, path = resolved
         if not args:
             session = self.store.get_session(name)
             await self.telegram.send_message(chat_id, f"Exec mode: {session.sandbox_mode}", thread_id)
@@ -384,15 +441,20 @@ class GatewayApp:
             return
         if mode == "readonly":
             mode = "read-only"
-        self.store.update_session(name, sandbox_mode=mode)
-        await self.telegram.send_message(chat_id, f"Exec mode set to {mode}", thread_id)
+        try:
+            self._authorize_command("execmode", user_id, workspace_name=name, requested_profile_name="default")
+        except PolicyAuthorizationError as exc:
+            await self.telegram.send_message(chat_id, str(exc), thread_id)
+            return
+        await self.sessions.apply_policy_change(name, path, sandbox_mode=mode, reason="execmode_change")
+        await self.telegram.send_message(chat_id, f"Exec mode set to {mode}. A fresh session will be used for the next run.", thread_id)
 
-    async def _set_approvals(self, scope: ChatScope, chat_id: int, thread_id: int | None, args: list[str]) -> None:
+    async def _set_approvals(self, scope: ChatScope, user_id: int, chat_id: int, thread_id: int | None, args: list[str]) -> None:
         resolved = self._workspace_from_scope(scope)
         if not resolved:
             await self.telegram.send_message(chat_id, "No workspace bound.", thread_id)
             return
-        name, _ = resolved
+        name, path = resolved
         if not args:
             session = self.store.get_session(name)
             await self.telegram.send_message(chat_id, f"Approvals: {session.approval_policy}", thread_id)
@@ -401,8 +463,78 @@ class GatewayApp:
         if policy not in {"never", "untrusted"}:
             await self.telegram.send_message(chat_id, "Allowed values: never, untrusted", thread_id)
             return
-        self.store.update_session(name, approval_policy=policy)
-        await self.telegram.send_message(chat_id, f"Approvals set to {policy}", thread_id)
+        try:
+            self._authorize_command("approvals", user_id, workspace_name=name, requested_approval_policy=policy)
+        except PolicyAuthorizationError as exc:
+            await self.telegram.send_message(chat_id, str(exc), thread_id)
+            return
+        await self.sessions.apply_policy_change(name, path, approval_policy=policy, reason="approval_policy_change")
+        await self.telegram.send_message(chat_id, f"Approvals set to {policy}. A fresh session will be used for the next run.", thread_id)
+
+    async def _session_command(self, scope: ChatScope, user_id: int, chat_id: int, thread_id: int | None, args: list[str]) -> None:
+        if not args or args[0] == "show":
+            await self._send_status(scope, chat_id, thread_id, user_id=user_id)
+            return
+        resolved = self._workspace_from_scope(scope)
+        if not resolved:
+            await self.telegram.send_message(chat_id, "No workspace bound.", thread_id)
+            return
+        name, path = resolved
+        action = args[0].lower()
+        if action == "restart":
+            try:
+                await self.sessions.restart_workspace(name, path, reason="session_restart")
+            except WorkspacePreflightError as exc:
+                self.logger.warning(
+                    "[FIX] session_restart_preflight_failed",
+                    extra={
+                        "extra_fields": {
+                            "workspace_name": name,
+                            "workspace_path": path,
+                            "reason": exc.result.user_message,
+                        }
+                    },
+                )
+                await self.telegram.send_message(chat_id, exc.result.user_message, thread_id)
+                return
+            await self.telegram.send_message(chat_id, f"Session restarted for {display_workspace_name(name)}.", thread_id)
+            return
+        if action == "reset":
+            await self._reset_session(scope, user_id, chat_id, thread_id)
+            return
+        if action == "profile":
+            if len(args) != 2:
+                await self.telegram.send_message(chat_id, "Usage: /session profile <name>", thread_id)
+                return
+            requested_profile = self._normalize_profile_name(args[1])
+            if requested_profile not in self.config.execution_profiles:
+                await self.telegram.send_message(
+                    chat_id,
+                    "Unknown profile. Allowed: " + ", ".join(sorted(self.config.execution_profiles)),
+                    thread_id,
+                )
+                return
+            try:
+                self._authorize_command("session_profile", user_id, workspace_name=name, workspace_path=path, requested_profile_name=requested_profile)
+                session = await self.sessions.apply_policy_change(name, path, profile_name=requested_profile, reason="session_profile_change")
+            except PolicyAuthorizationError as exc:
+                await self.telegram.send_message(chat_id, str(exc), thread_id)
+                return
+            except RuntimeError as exc:
+                await self.telegram.send_message(chat_id, str(exc), thread_id)
+                return
+            await self.telegram.send_message(
+                chat_id,
+                (
+                    f"Break-glass enabled until {session.break_glass_expires_at}. "
+                    "A fresh session will be used for the next run."
+                    if requested_profile == "break-glass"
+                    else f"Profile set to {session.profile_name}. Sandbox={session.sandbox_mode}, approvals={session.approval_policy}, network={session.network_mode}. A fresh session will be used for the next run."
+                ),
+                thread_id,
+            )
+            return
+        await self.telegram.send_message(chat_id, "Usage: /session [show|profile <name>|restart|reset]", thread_id)
 
     async def _debug_status(self, chat_id: int, thread_id: int | None) -> None:
         runtime = self.sessions.runtime_snapshot()
@@ -443,7 +575,13 @@ class GatewayApp:
                 self.logger.exception("telegram.edit.failed")
 
         try:
-            result = await self.sessions.execute(workspace_name, workspace_path, prompt, stream_callback)
+            result = await self.sessions.execute(workspace_name, workspace_path, user_id, prompt, stream_callback)
+        except WorkspacePreflightError as exc:
+            await self.telegram.edit_message(chat_id, initial["message_id"], f"[{workspace_name}] {exc.result.user_message}")
+            return
+        except PolicyEnforcementError as exc:
+            await self.telegram.edit_message(chat_id, initial["message_id"], f"[{workspace_name}] {exc}")
+            return
         except Exception:
             self.logger.exception("codex.run.crashed")
             await self.telegram.edit_message(chat_id, initial["message_id"], f"[{workspace_name}] internal error")
@@ -476,3 +614,36 @@ class GatewayApp:
         if current:
             chunks.append(current)
         return chunks
+
+    def _authorize_command(
+        self,
+        command_name: str,
+        user_id: int,
+        *,
+        workspace_name: str | None = None,
+        workspace_path: str | None = None,
+        requested_profile_name: str | None = None,
+        requested_approval_policy: str | None = None,
+        requested_command_rule_group: str | None = None,
+    ) -> None:
+        if self.policy_resolver is None:
+            if self.config.trusted_admin_only_bind and command_name == "bind" and not self._is_admin(user_id):
+                raise PolicyAuthorizationError("Admin only.")
+            return
+        self.policy_resolver.authorize_command(
+            command_name=command_name,
+            user_id=user_id,
+            workspace_name=workspace_name,
+            workspace_path=workspace_path,
+            requested_profile_name=requested_profile_name,
+            requested_approval_policy=requested_approval_policy,
+            requested_command_rule_group=requested_command_rule_group,
+        )
+
+    def _normalize_profile_name(self, profile_name: str) -> str:
+        aliases = {
+            "breakglass": "break-glass",
+            "break_glass": "break-glass",
+            "bg": "break-glass",
+        }
+        return aliases.get(profile_name.lower(), profile_name.lower())
