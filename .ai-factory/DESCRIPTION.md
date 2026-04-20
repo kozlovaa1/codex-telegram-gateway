@@ -14,6 +14,8 @@ The project is intentionally stdlib-first and deploys as a small long-polling se
 - Separate subprocess execution for every Codex request
 - Path allowlist enforcement for workspace selection and binding
 - Topic-aware behavior for forum supergroups and threaded private chats
+- Dedicated Telegram response UX policy with private-chat reaction/typing/progress/stream handling
+- Conservative final-only delivery path for groups and forum topics with transport downgrade fallbacks
 - Runtime controls for sandbox mode, approvals policy, model selection, and session reset
 
 ## Tech Stack
@@ -30,6 +32,8 @@ The codebase is organized as a small layered service with clear module boundarie
 
 - transport and command orchestration in `app.py`
 - Codex subprocess lifecycle in `codex_adapter.py`
+- Telegram transport capability probing and fallback delivery in `telegram_api.py`
+- request-scoped response lifecycle orchestration in `response_ux.py`
 - state persistence in `workspace_store.py`
 - per-workspace concurrency and queue control in `session_manager.py`
 - path validation and external API wrappers in dedicated modules
@@ -44,6 +48,7 @@ This is best served by a layered architecture with explicit boundaries between T
 - Isolation: session state must never leak across chats or topics
 - Deployability: service should run under `systemd` with minimal dependencies
 - Operability: runtime and session status must be inspectable through bot commands and logs
+- UX resilience: helper failures in reactions, typing, edits, or streaming must not block final response delivery
 
 ## Architecture
 

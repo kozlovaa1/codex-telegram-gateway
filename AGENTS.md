@@ -199,6 +199,9 @@ Current coverage focuses on:
 - topic and session naming helpers
 - bootstrap wiring for policy and preflight services
 - auth fallback behavior
+- prompt-flow regressions for Telegram response UX
+- response lifecycle coordination and duplicate-request protection
+- Telegram transport capability downgrades and send/edit fallback behavior
 
 ## Systemd
 

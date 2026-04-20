@@ -14,6 +14,8 @@
 
 - Keep application orchestration in `src/codex_telegram_gateway/app.py`
 - Keep external process integration in adapter modules such as `codex_adapter.py`
+- Keep Telegram response lifecycle state and delivery policy in `response_ux.py`
+- Keep Telegram Bot API capability probing and transport fallbacks in `telegram_api.py`
 - Keep persistence logic in `workspace_store.py`
 - Keep cross-request runtime coordination in `session_manager.py`
 - Keep API boundary wrappers isolated in modules like `telegram_api.py`
@@ -28,10 +30,12 @@
 
 - Use the structured logging helpers in `logging_utils.py`
 - Emit JSON log records with contextual fields for bot updates and Codex runs
+- Prefer stable event names for response-UX and transport fallback diagnostics
 - Keep secrets and raw credentials out of logs
 
 ## Testing
 
 - Use `unittest` with focused module-level test files in `tests/`
 - Prefer deterministic fakes over live integrations for session and adapter behavior
+- Cover adapter normalization and Telegram transport helpers separately from app orchestration tests
 - Keep tests runnable with `PYTHONPATH=src python3 -m unittest discover -s tests -v`
