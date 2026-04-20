@@ -15,6 +15,49 @@ class ChatScope:
         return f"{self.chat_id}:{self.thread_id or 0}"
 
 
+@dataclass(frozen=True, slots=True)
+class TelegramResponseUxPolicy:
+    scope_name: str
+    allow_reaction: bool
+    allow_typing: bool
+    allow_progress_updates: bool
+    allow_streaming_text: bool
+
+    @property
+    def final_only(self) -> bool:
+        return not self.allow_progress_updates and not self.allow_streaming_text
+
+
+@dataclass(frozen=True, slots=True)
+class TelegramRequestIdentity:
+    chat_id: int
+    thread_id: int | None
+    message_id: int | None
+
+    @property
+    def key(self) -> str:
+        return f"{self.chat_id}:{self.thread_id or 0}:{self.message_id or 0}"
+
+
+@dataclass(frozen=True, slots=True)
+class TelegramResponseTarget:
+    chat_id: int
+    thread_id: int | None
+    reply_to_message_id: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class TelegramResponseContext:
+    identity: TelegramRequestIdentity
+    target: TelegramResponseTarget
+    workspace_name: str
+    workspace_path: str
+    chat_type: str | None
+    user_id: int
+    prompt: str
+    policy: TelegramResponseUxPolicy
+
+
 @dataclass(slots=True)
 class WorkspaceRecord:
     name: str

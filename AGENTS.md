@@ -27,6 +27,7 @@
 │   ├── models.py                    # Shared data records
 │   ├── path_security.py             # Canonical path allowlist checks
 │   ├── rate_limit.py                # Per-user rate limiting
+│   ├── response_ux.py               # Telegram response lifecycle orchestration
 │   ├── session_manager.py           # Per-workspace serialization and queueing
 │   ├── telegram_api.py              # Telegram Bot API wrapper
 │   ├── workspace_preflight.py       # Workspace filesystem preflight diagnostics
@@ -34,6 +35,7 @@
 ├── tests/                           # Unit tests for core gateway behavior
 ├── systemd/                         # Example service unit
 ├── .ai-factory/                     # AI Factory project context artifacts
+├── .codex/config.toml               # Project-local Codex MCP configuration
 ├── README.md                        # Project overview and deployment guide
 ├── config.toml                      # Runtime configuration
 ├── config.example.toml              # Config template
@@ -48,9 +50,11 @@
 | `src/codex_telegram_gateway/app.py` | Main Telegram command and routing logic |
 | `src/codex_telegram_gateway/codex_adapter.py` | Launches `codex exec` and `codex exec resume` |
 | `src/codex_telegram_gateway/execution_policy.py` | Resolves effective execution profile and centralized admin checks |
+| `src/codex_telegram_gateway/response_ux.py` | Owns Telegram response lifecycle and prompt delivery UX orchestration |
 | `src/codex_telegram_gateway/workspace_preflight.py` | Validates workspace readiness before session start/restart |
 | `src/codex_telegram_gateway/workspace_store.py` | Persists workspace bindings and sessions |
 | `config.toml` | Runtime paths, Codex options, and workspace defaults |
+| `.codex/config.toml` | Project-local Codex MCP servers such as Context7 |
 | `.env` | Secrets such as Telegram token and optional API key |
 
 ## Documentation
@@ -102,6 +106,9 @@
   - start, stop, restart, and policy-change behavior
 - `src/codex_telegram_gateway/path_security.py`
   - canonical path validation against `allowed_roots`
+- `src/codex_telegram_gateway/response_ux.py`
+  - request-scoped Telegram response lifecycle orchestration
+  - duplicate responder protection and prompt delivery cleanup
 - `src/codex_telegram_gateway/workspace_preflight.py`
   - canonical-path and filesystem readiness checks before execution
 - `src/codex_telegram_gateway/telegram_api.py`
@@ -115,6 +122,8 @@ Runtime configuration:
   - `TELEGRAM_BOT_TOKEN`
   - `TELEGRAM_ADMIN_IDS`
   - optional `OPENAI_API_KEY`
+  - optional `CONTEXT7_API_KEY`
+- local `npx` availability is required if `.codex/config.toml` enables `context7` via `@upstash/context7-mcp`
 - `config.toml`
   - paths
   - allowed roots
@@ -124,6 +133,9 @@ Runtime configuration:
   - break-glass TTL
   - default workspace
   - Codex runtime settings
+- `.codex/config.toml`
+  - project-local MCP server configuration for Codex
+  - includes `context7` for up-to-date documentation lookup when `CONTEXT7_API_KEY` is present
 
 Auth behavior:
 
@@ -221,3 +233,4 @@ sudo systemctl status codex-telegram-gateway
 - Keep session isolation intact. Do not introduce shortcuts that can mix state across unrelated chats or topics.
 - Preserve stdlib-first deployment unless the change has a clear operational payoff.
 - Treat `systemd` files and runtime paths as environment-specific templates, not universal defaults.
+- For library or API documentation lookups, prefer the `context7` MCP server when it is configured and available.

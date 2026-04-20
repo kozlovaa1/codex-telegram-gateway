@@ -24,6 +24,7 @@ src/
     ├── models.py                # Shared typed records and value objects
     ├── path_security.py         # Allowed-root path validation
     ├── rate_limit.py            # Per-user message rate limiting
+    ├── response_ux.py           # Telegram response lifecycle orchestration
     ├── session_manager.py       # Per-workspace runtime coordination
     ├── workspace_store.py       # SQLite persistence for workspaces, bindings, sessions
     ├── workspace_preflight.py   # Workspace readiness and filesystem diagnostics
@@ -48,8 +49,10 @@ tests/
 The dependency direction should stay shallow and explicit:
 
 - `app.py` may depend on config, models, session management, persistence, path security, and API adapters
+- `app.py` may depend on `response_ux.py` as the only owner of Telegram prompt delivery lifecycle state
 - `app.py` may depend on execution-policy resolution for authorization checks, but policy enforcement rules should not be duplicated outside that module
 - `session_manager.py` may depend on the store, shared models, logging helpers, execution-policy resolution, workspace preflight, and Codex adapter
+- `response_ux.py` may depend on shared models, config, Telegram transport, and adapter event text extraction, but it should not own persistence or workspace routing
 - `workspace_store.py` and `path_security.py` should remain infrastructure-oriented and independent from Telegram logic
 - `execution_policy.py` should remain transport-neutral and callable from both Telegram handlers and runtime orchestration
 - `telegram_api.py` and `codex_adapter.py` should not depend on application command routing
@@ -63,6 +66,7 @@ The dependency direction should stay shallow and explicit:
 ## Layer Communication
 
 - Telegram updates enter through `app.py`, which resolves scope, binding, and command routing
+- Prompt execution enters `response_ux.py` from `app.py`, which owns request-scoped delivery state and cleanup
 - `app.py` delegates authorization decisions to `execution_policy.py`
 - `app.py` delegates run coordination to `SessionManager`
 - `SessionManager` uses `WorkspaceStore` for persisted state, `workspace_preflight.py` for readiness checks, and `CodexAdapter` for subprocess execution

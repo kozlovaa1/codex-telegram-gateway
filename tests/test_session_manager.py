@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from codex_telegram_gateway.config import AdminOnlySettings, AppConfig, ExecutionProfile, TelegramSettings
+from codex_telegram_gateway.config import AdminOnlySettings, AppConfig, ExecutionProfile, TelegramSettings, default_response_ux_settings
 from codex_telegram_gateway.execution_policy import ExecutionPolicyResolver
 from codex_telegram_gateway.models import CodexRunResult
 from codex_telegram_gateway.session_manager import SessionManager
@@ -116,6 +116,7 @@ class SessionManagerTests(unittest.IsolatedAsyncioTestCase):
             admin_only=AdminOnlySettings(True, False, True, True, True, True),
             break_glass_ttl_seconds=1800,
             telegram=TelegramSettings(True, True, True),
+            response_ux=default_response_ux_settings(),
         )
         return ExecutionPolicyResolver(config)
 

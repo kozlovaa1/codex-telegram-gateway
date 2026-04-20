@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .models import TelegramResponseUxPolicy
+
 
 LOGGER = logging.getLogger("codex_telegram_gateway.config")
 
@@ -42,6 +44,43 @@ class TelegramSettings:
     allow_private_chats: bool
     allow_group_chats: bool
     allow_topics: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ResponseUxScopeSettings:
+    reaction: bool
+    typing: bool
+    progress: bool
+    stream: bool
+
+    def validate(self, *, field_prefix: str) -> None:
+        if self.stream and not self.progress:
+            raise _config_error(
+                "response_ux_invalid",
+                field=field_prefix,
+                detail="stream requires progress to be enabled",
+            )
+
+    def to_policy(self, *, scope_name: str) -> TelegramResponseUxPolicy:
+        return TelegramResponseUxPolicy(
+            scope_name=scope_name,
+            allow_reaction=self.reaction,
+            allow_typing=self.typing,
+            allow_progress_updates=self.progress,
+            allow_streaming_text=self.stream,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ResponseUxSettings:
+    private_chat: ResponseUxScopeSettings
+    group_chat: ResponseUxScopeSettings
+
+    def resolve_policy(self, *, chat_type: str | None, thread_id: int | None) -> TelegramResponseUxPolicy:
+        if chat_type == "private":
+            return self.private_chat.to_policy(scope_name="private")
+        scope_name = "group-topic" if thread_id is not None else "group"
+        return self.group_chat.to_policy(scope_name=scope_name)
 
 
 @dataclass(slots=True)
@@ -83,6 +122,7 @@ class AppConfig:
     admin_only: AdminOnlySettings
     break_glass_ttl_seconds: int
     telegram: TelegramSettings
+    response_ux: ResponseUxSettings
 
 
 class ConfigError(RuntimeError):
@@ -341,6 +381,64 @@ def _parse_admin_only_settings(data: dict[str, Any]) -> AdminOnlySettings:
     )
 
 
+def default_response_ux_settings() -> ResponseUxSettings:
+    return ResponseUxSettings(
+        private_chat=ResponseUxScopeSettings(
+            reaction=True,
+            typing=True,
+            progress=True,
+            stream=True,
+        ),
+        group_chat=ResponseUxScopeSettings(
+            reaction=True,
+            typing=True,
+            progress=False,
+            stream=False,
+        ),
+    )
+
+
+def _parse_response_ux_scope(
+    raw_scope: Any,
+    *,
+    field_prefix: str,
+    defaults: ResponseUxScopeSettings,
+) -> ResponseUxScopeSettings:
+    if raw_scope is None:
+        return defaults
+    if not isinstance(raw_scope, dict):
+        raise _config_error("config_table_invalid", table=field_prefix, value_type=type(raw_scope).__name__)
+    settings = ResponseUxScopeSettings(
+        reaction=_coerce_bool(raw_scope.get("reaction", defaults.reaction), field_name=f"{field_prefix}.reaction"),
+        typing=_coerce_bool(raw_scope.get("typing", defaults.typing), field_name=f"{field_prefix}.typing"),
+        progress=_coerce_bool(raw_scope.get("progress", defaults.progress), field_name=f"{field_prefix}.progress"),
+        stream=_coerce_bool(raw_scope.get("stream", defaults.stream), field_name=f"{field_prefix}.stream"),
+    )
+    settings.validate(field_prefix=field_prefix)
+    return settings
+
+
+def _parse_response_ux_settings(data: dict[str, Any]) -> ResponseUxSettings:
+    defaults = default_response_ux_settings()
+    raw_ux = data.get("response_ux")
+    if raw_ux is None:
+        return defaults
+    if not isinstance(raw_ux, dict):
+        raise _config_error("config_table_invalid", table="response_ux", value_type=type(raw_ux).__name__)
+    return ResponseUxSettings(
+        private_chat=_parse_response_ux_scope(
+            raw_ux.get("private_chat"),
+            field_prefix="response_ux.private_chat",
+            defaults=defaults.private_chat,
+        ),
+        group_chat=_parse_response_ux_scope(
+            raw_ux.get("group_chat"),
+            field_prefix="response_ux.group_chat",
+            defaults=defaults.group_chat,
+        ),
+    )
+
+
 def _parse_admin_ids(raw_admin_ids: str) -> set[int]:
     admin_ids: set[int] = set()
     for raw_value in raw_admin_ids.split(","):
@@ -370,6 +468,7 @@ def load_config(config_path: str | os.PathLike[str], env_path: str | os.PathLike
     execution_profiles = _parse_execution_profiles(data, command_rule_groups=command_rule_groups)
     workspace_profile_defaults = _parse_workspace_profile_defaults(data, profiles=execution_profiles)
     admin_only = _parse_admin_only_settings(data)
+    response_ux = _parse_response_ux_settings(data)
     break_glass_ttl_seconds = _coerce_int(
         data.get("break_glass_ttl_seconds", 1800),
         field_name="break_glass_ttl_seconds",
@@ -419,6 +518,7 @@ def load_config(config_path: str | os.PathLike[str], env_path: str | os.PathLike
             allow_group_chats=bool(telegram_data.get("allow_group_chats", True)),
             allow_topics=bool(telegram_data.get("allow_topics", True)),
         ),
+        response_ux=response_ux,
     )
     LOGGER.info(
         "config_validation_succeeded",

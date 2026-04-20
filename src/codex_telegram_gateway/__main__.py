@@ -9,6 +9,7 @@ from .codex_adapter import CodexAdapter
 from .config import load_config
 from .execution_policy import ExecutionPolicyResolver
 from .logging_utils import setup_logging
+from .response_ux import ResponseUxCoordinator
 from .session_manager import SessionManager
 from .telegram_api import TelegramApi
 from .workspace_preflight import WorkspacePreflightChecker
@@ -73,6 +74,11 @@ def main() -> None:
         "TelegramApi",
         lambda: TelegramApi(config.telegram_token, config.telegram_api_base),
     )
+    response_ux = _build_component(
+        logger,
+        "ResponseUxCoordinator",
+        lambda: ResponseUxCoordinator(config, telegram, logger),
+    )
     adapter = _build_component(
         logger,
         "CodexAdapter",
@@ -103,7 +109,34 @@ def main() -> None:
     app = _build_component(
         logger,
         "GatewayApp",
-        lambda: GatewayApp(config, store, sessions, telegram, logger, policy_resolver=policy_resolver),
+        lambda: GatewayApp(
+            config,
+            store,
+            sessions,
+            telegram,
+            logger,
+            policy_resolver=policy_resolver,
+            response_ux=response_ux,
+        ),
+    )
+    logger.info(
+        "response_ux_bootstrapped",
+        extra={
+            "extra_fields": {
+                "private_scope": {
+                    "reaction": config.response_ux.private_chat.reaction,
+                    "typing": config.response_ux.private_chat.typing,
+                    "progress": config.response_ux.private_chat.progress,
+                    "stream": config.response_ux.private_chat.stream,
+                },
+                "group_scope": {
+                    "reaction": config.response_ux.group_chat.reaction,
+                    "typing": config.response_ux.group_chat.typing,
+                    "progress": config.response_ux.group_chat.progress,
+                    "stream": config.response_ux.group_chat.stream,
+                },
+            }
+        },
     )
     asyncio.run(app.run())
 

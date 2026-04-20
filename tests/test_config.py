@@ -62,6 +62,11 @@ class LoadConfigTests(unittest.TestCase):
         self.assertEqual(config.workspace_profile_defaults["infra"], "ops")
         self.assertTrue(config.admin_only.break_glass)
         self.assertEqual(config.break_glass_ttl_seconds, 1200)
+        private_policy = config.response_ux.resolve_policy(chat_type="private", thread_id=None)
+        group_policy = config.response_ux.resolve_policy(chat_type="supergroup", thread_id=55)
+        self.assertTrue(private_policy.allow_streaming_text)
+        self.assertTrue(private_policy.allow_progress_updates)
+        self.assertTrue(group_policy.final_only)
 
     def test_load_config_rejects_unknown_rule_group_reference(self) -> None:
         with self.assertRaises(ConfigError):
@@ -126,6 +131,57 @@ class LoadConfigTests(unittest.TestCase):
                 allow_topics = true
                 """
             )
+
+    def test_load_config_rejects_stream_without_progress(self) -> None:
+        with self.assertRaises(ConfigError):
+            self._load(
+                """
+                sqlite_path = "/tmp/gateway.sqlite3"
+                runtime_dir = "/tmp/runtime"
+                log_dir = "/tmp/log"
+                codex_bin = "/bin/true"
+
+                [workspace_defaults]
+                server-ops = "/srv/projects"
+
+                [telegram]
+                allow_private_chats = true
+                allow_group_chats = true
+                allow_topics = true
+
+                [response_ux.private_chat]
+                progress = false
+                stream = true
+                """
+            )
+
+    def test_load_config_applies_safe_response_ux_defaults_when_omitted(self) -> None:
+        config = self._load(
+            """
+            sqlite_path = "/tmp/gateway.sqlite3"
+            runtime_dir = "/tmp/runtime"
+            log_dir = "/tmp/log"
+            codex_bin = "/bin/true"
+
+            [workspace_defaults]
+            server-ops = "/srv/projects"
+
+            [telegram]
+            allow_private_chats = true
+            allow_group_chats = true
+            allow_topics = true
+            """
+        )
+
+        private_policy = config.response_ux.resolve_policy(chat_type="private", thread_id=None)
+        topic_policy = config.response_ux.resolve_policy(chat_type="supergroup", thread_id=99)
+        self.assertTrue(private_policy.allow_reaction)
+        self.assertTrue(private_policy.allow_typing)
+        self.assertTrue(private_policy.allow_progress_updates)
+        self.assertTrue(private_policy.allow_streaming_text)
+        self.assertTrue(topic_policy.allow_reaction)
+        self.assertTrue(topic_policy.allow_typing)
+        self.assertTrue(topic_policy.final_only)
 
     def test_load_config_rejects_unsafe_default_network_mode(self) -> None:
         with self.assertRaises(ConfigError):

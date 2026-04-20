@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from codex_telegram_gateway.app import GatewayApp, display_workspace_name, make_session_workspace_name, supports_topic_creation
-from codex_telegram_gateway.config import AdminOnlySettings, AppConfig, ExecutionProfile, TelegramSettings
+from codex_telegram_gateway.config import AdminOnlySettings, AppConfig, ExecutionProfile, TelegramSettings, default_response_ux_settings
 from codex_telegram_gateway.models import ChatScope
 from codex_telegram_gateway.workspace_store import WorkspaceStore
 
@@ -85,6 +85,7 @@ class AppDefaultWorkspaceTests(unittest.TestCase):
                 ),
                 break_glass_ttl_seconds=1800,
                 telegram=TelegramSettings(True, True, True),
+                response_ux=default_response_ux_settings(),
             )
             app = GatewayApp(config, store, DummySessions(), DummyTelegram(), logging.getLogger("test"))
             resolved = app._workspace_from_scope(ChatScope(chat_id=1, thread_id=None))

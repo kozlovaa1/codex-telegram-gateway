@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from codex_telegram_gateway.app import GatewayApp
-from codex_telegram_gateway.config import AdminOnlySettings, AppConfig, ExecutionProfile, TelegramSettings
+from codex_telegram_gateway.config import AdminOnlySettings, AppConfig, ExecutionProfile, TelegramSettings, default_response_ux_settings
 from codex_telegram_gateway.execution_policy import ExecutionPolicyResolver
 from codex_telegram_gateway.models import ChatScope
 from codex_telegram_gateway.workspace_preflight import PreflightDiagnostic, WorkspacePreflightError, WorkspacePreflightResult
@@ -103,6 +103,7 @@ def make_config(tmp: str, admin_ids: set[int], *, bind_admin: bool = True, use_a
         ),
         break_glass_ttl_seconds=1800,
         telegram=TelegramSettings(True, True, True),
+        response_ux=default_response_ux_settings(),
     )
 
 

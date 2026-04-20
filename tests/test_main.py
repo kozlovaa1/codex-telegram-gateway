@@ -6,7 +6,7 @@ from argparse import Namespace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from codex_telegram_gateway.config import AdminOnlySettings, AppConfig, ExecutionProfile, TelegramSettings
+from codex_telegram_gateway.config import AdminOnlySettings, AppConfig, ExecutionProfile, TelegramSettings, default_response_ux_settings
 
 
 def make_config(tmp: str) -> AppConfig:
@@ -53,6 +53,7 @@ def make_config(tmp: str) -> AppConfig:
         admin_only=AdminOnlySettings(True, False, True, True, True, True),
         break_glass_ttl_seconds=1800,
         telegram=TelegramSettings(True, True, True),
+        response_ux=default_response_ux_settings(),
     )
 
 
@@ -74,7 +75,7 @@ class MainBootstrapTests(unittest.TestCase):
                             with patch("codex_telegram_gateway.__main__.TelegramApi", return_value=telegram_instance):
                                 with patch("codex_telegram_gateway.__main__.CodexAdapter", return_value=adapter_instance):
                                     with patch("codex_telegram_gateway.__main__.SessionManager", return_value=session_instance) as session_manager_cls:
-                                        with patch("codex_telegram_gateway.__main__.GatewayApp", return_value=app_instance):
+                                        with patch("codex_telegram_gateway.__main__.GatewayApp", return_value=app_instance) as gateway_app_cls:
                                             with patch("codex_telegram_gateway.__main__.asyncio.run") as asyncio_run:
                                                 from codex_telegram_gateway import __main__
 
@@ -85,6 +86,8 @@ class MainBootstrapTests(unittest.TestCase):
             kwargs = session_manager_cls.call_args.kwargs
             self.assertIn("policy_resolver", kwargs)
             self.assertIn("preflight_checker", kwargs)
+            app_kwargs = gateway_app_cls.call_args.kwargs
+            self.assertIn("response_ux", app_kwargs)
             store_instance.initialize.assert_called_once()
             asyncio_run.assert_called_once()
 

@@ -8,14 +8,14 @@ import textwrap
 from datetime import UTC, datetime
 
 from .config import AppConfig
-from .codex_adapter import PolicyEnforcementError
 from .execution_policy import ExecutionPolicyResolver, PolicyAuthorizationError
 from .logging_utils import log_extra
-from .models import ChatScope
+from .models import ChatScope, TelegramRequestIdentity, TelegramResponseContext, TelegramResponseTarget
 from .path_security import PathSecurityError, resolve_workspace_path
 from .rate_limit import RateLimiter
+from .response_ux import ResponseUxCoordinator
 from .session_manager import SessionManager
-from .telegram_api import TelegramApi, TelegramApiError
+from .telegram_api import TelegramApi
 from .workspace_preflight import WorkspacePreflightError
 from .workspace_store import WorkspaceStore
 
@@ -63,6 +63,7 @@ class GatewayApp:
         telegram: TelegramApi,
         logger: logging.Logger,
         policy_resolver: ExecutionPolicyResolver | None = None,
+        response_ux: ResponseUxCoordinator | None = None,
     ) -> None:
         self.config = config
         self.store = store
@@ -70,6 +71,7 @@ class GatewayApp:
         self.telegram = telegram
         self.logger = logger
         self.policy_resolver = policy_resolver
+        self.response_ux = response_ux or ResponseUxCoordinator(config, telegram, logger)
         self.rate_limiter = RateLimiter(
             config.per_user_rate_limit_window_seconds,
             config.per_user_rate_limit_max_messages,
@@ -146,7 +148,15 @@ class GatewayApp:
                 is_forum=bool(chat.get("is_forum")),
             )
             return
-        await self._handle_prompt(scope, user_id, chat["id"], message.get("message_thread_id"), message.get("message_id"), text)
+        await self._handle_prompt(
+            scope,
+            user_id,
+            chat["id"],
+            message.get("message_thread_id"),
+            message.get("message_id"),
+            text,
+            chat_type=chat_type,
+        )
 
     def _is_admin(self, user_id: int) -> bool:
         return user_id in self.config.telegram_admin_ids
@@ -386,6 +396,7 @@ class GatewayApp:
         if await self.sessions.stop_workspace(name):
             log_extra(self.logger, "codex.run.stopped", workspace=name, by_user=user_id)
         try:
+            await self.response_ux.cancel_scope(chat_id, thread_id, reason="session_reset")
             await self.sessions.restart_workspace(name, path, reason="session_reset")
         except WorkspacePreflightError as exc:
             self.logger.warning(
@@ -408,6 +419,7 @@ class GatewayApp:
             await self.telegram.send_message(chat_id, "No workspace bound.", thread_id)
             return
         name, _ = resolved
+        await self.response_ux.cancel_scope(chat_id, thread_id, reason="manual_stop")
         stopped = await self.sessions.stop_workspace(name)
         await self.telegram.send_message(chat_id, "Stopped active run." if stopped else "No active run.", thread_id)
 
@@ -483,6 +495,7 @@ class GatewayApp:
         action = args[0].lower()
         if action == "restart":
             try:
+                await self.response_ux.cancel_scope(chat_id, thread_id, reason="session_restart")
                 await self.sessions.restart_workspace(name, path, reason="session_restart")
             except WorkspacePreflightError as exc:
                 self.logger.warning(
@@ -543,77 +556,37 @@ class GatewayApp:
             lines.append(f"{item['workspace']} busy={item['busy']} idle={item['idle_seconds']}s path={item['path']}")
         await self.telegram.send_message(chat_id, "\n".join(lines), thread_id)
 
-    async def _handle_prompt(self, scope: ChatScope, user_id: int, chat_id: int, thread_id: int | None, message_id: int | None, prompt: str) -> None:
+    async def _handle_prompt(
+        self,
+        scope: ChatScope,
+        user_id: int,
+        chat_id: int,
+        thread_id: int | None,
+        message_id: int | None,
+        prompt: str,
+        *,
+        chat_type: str | None,
+    ) -> None:
         resolved = self._workspace_from_scope(scope)
         if not resolved:
             await self.telegram.send_message(chat_id, "No workspace bound. Use /workspaces and /use <name>.", thread_id)
             return
         workspace_name, workspace_path = resolved
-        initial = await self.telegram.send_message(chat_id, f"[{workspace_name}] queued", thread_id, reply_to_message_id=message_id)
-        buffer_parts: list[str] = []
-        last_edit = 0.0
-
-        async def stream_callback(event: dict) -> None:
-            nonlocal last_edit
-            text = extract_display_text(event)
-            if not text:
-                if event.get("type") == "stderr" and event.get("message"):
-                    text = f"[stderr] {event['message']}"
-                elif event.get("type") == "error" and event.get("message"):
-                    text = f"[info] {event['message']}"
-            if not text:
-                return
-            buffer_parts.append(text)
-            now = asyncio.get_running_loop().time()
-            if now - last_edit < self.config.stream_edit_interval_seconds:
-                return
-            last_edit = now
-            preview = self._truncate_for_telegram(f"[{workspace_name}] running\n\n{''.join(buffer_parts)}")
-            try:
-                await self.telegram.edit_message(chat_id, initial["message_id"], preview, reply_markup=INLINE_KEYBOARD)
-            except TelegramApiError:
-                self.logger.exception("telegram.edit.failed")
-
-        try:
-            result = await self.sessions.execute(workspace_name, workspace_path, user_id, prompt, stream_callback)
-        except WorkspacePreflightError as exc:
-            await self.telegram.edit_message(chat_id, initial["message_id"], f"[{workspace_name}] {exc.result.user_message}")
-            return
-        except PolicyEnforcementError as exc:
-            await self.telegram.edit_message(chat_id, initial["message_id"], f"[{workspace_name}] {exc}")
-            return
-        except Exception:
-            self.logger.exception("codex.run.crashed")
-            await self.telegram.edit_message(chat_id, initial["message_id"], f"[{workspace_name}] internal error")
-            return
-        final_text = result.final_text or "(empty response)"
-        summary = f"[{workspace_name}] {'done' if result.ok else 'failed'} in {result.duration_seconds:.1f}s\nSession: {result.session_id or 'n/a'}\n\n{final_text}"
-        chunks = self._split_for_telegram(summary)
-        await self.telegram.edit_message(chat_id, initial["message_id"], chunks[0], reply_markup=INLINE_KEYBOARD)
-        for extra in chunks[1:]:
-            await self.telegram.send_message(chat_id, extra, thread_id)
-        if result.errors and not result.ok:
-            error_text = self._truncate_for_telegram("Errors:\n" + "\n".join(result.errors[-20:]))
-            await self.telegram.send_message(chat_id, error_text, thread_id)
-
-    def _truncate_for_telegram(self, text: str) -> str:
-        return text[: self.config.telegram_message_chunk]
-
-    def _split_for_telegram(self, text: str) -> list[str]:
-        size = self.config.telegram_message_chunk
-        if len(text) <= size:
-            return [text]
-        lines = text.splitlines(keepends=True)
-        chunks: list[str] = []
-        current = ""
-        for line in lines:
-            if len(current) + len(line) > size and current:
-                chunks.append(current)
-                current = ""
-            current += line
-        if current:
-            chunks.append(current)
-        return chunks
+        response_ux_policy = self.config.response_ux.resolve_policy(chat_type=chat_type, thread_id=thread_id)
+        context = TelegramResponseContext(
+            identity=TelegramRequestIdentity(chat_id=chat_id, thread_id=thread_id, message_id=message_id),
+            target=TelegramResponseTarget(chat_id=chat_id, thread_id=thread_id, reply_to_message_id=message_id),
+            workspace_name=workspace_name,
+            workspace_path=workspace_path,
+            chat_type=chat_type,
+            user_id=user_id,
+            prompt=prompt,
+            policy=response_ux_policy,
+        )
+        await self.response_ux.run(
+            context,
+            lambda on_event: self.sessions.execute(workspace_name, workspace_path, user_id, prompt, on_event),
+        )
 
     def _authorize_command(
         self,

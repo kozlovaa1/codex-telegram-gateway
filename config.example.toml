@@ -114,3 +114,17 @@ admin_only = true
 allow_private_chats = true
 allow_group_chats = true
 allow_topics = true
+
+[response_ux.private_chat]
+# Private chats can use the richer acknowledgement path.
+reaction = true
+typing = true
+progress = true
+stream = true
+
+[response_ux.group_chat]
+# Groups and forum topics stay on the conservative final-response path.
+reaction = true
+typing = true
+progress = false
+stream = false

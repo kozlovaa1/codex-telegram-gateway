@@ -29,8 +29,10 @@ Telegram-обвязка для `Codex CLI`, где каждый Telegram chat/to
 - Linux-сервер с `systemd`
 - Python 3.12+
 - установленный `Codex CLI`
+- optional `Node.js`/`npx` для project-local `Context7` MCP
 - действующий Telegram bot token
 - OpenAI/Codex credentials для пользователя, под которым запускается сервис
+- optional `Context7` API key для MCP-доступа к актуальной документации из Codex
 
 ## Архитектура
 
@@ -163,6 +165,7 @@ sudo chown -R <service_user>:<service_group> <state_dir> <log_dir>
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_ADMIN_IDS=111111111,222222222
 OPENAI_API_KEY=...   # optional
+CONTEXT7_API_KEY=... # optional, for .codex/config.toml Context7 MCP
 ```
 
 Если используется API key, его нужно прописывать именно в `.env` рядом с `TELEGRAM_BOT_TOKEN`.
@@ -192,6 +195,17 @@ OPENAI_API_KEY=...   # optional
 - значение `codex_auth_source_home` должно быть настроено под ваше окружение и выбранного пользователя.
 
 Важно: пользователь сервиса должен иметь рабочий `codex login` в `codex_auth_source_home` или API key в `.env`.
+
+## Context7 MCP
+
+Для работы с актуальной документацией в Codex в проект добавлен [`.codex/config.toml`](.codex/config.toml) с MCP-сервером `context7`.
+
+- источник конфигурации: официальный гайд Context7 для Codex `https://context7.com/docs/resources/all-clients`;
+- конфиг поднимает локальный `@upstash/context7-mcp` через `npx`;
+- `CONTEXT7_API_KEY` берётся из окружения процесса и не хранится в репозитории;
+- после задания ключа можно просить Codex использовать Context7 при работе с библиотечной документацией.
+
+Это решение основано на документации Context7 для MCP clients и developer guide: `@upstash/context7-mcp` умеет читать `CONTEXT7_API_KEY` из environment variable, поэтому ключ не приходится хардкодить в [`.codex/config.toml`](.codex/config.toml).
 
 Поведение непривязанных чатов:
 

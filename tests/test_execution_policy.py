@@ -4,7 +4,7 @@ import unittest
 from datetime import UTC, datetime
 from pathlib import Path
 
-from codex_telegram_gateway.config import AdminOnlySettings, AppConfig, ExecutionProfile, TelegramSettings
+from codex_telegram_gateway.config import AdminOnlySettings, AppConfig, ExecutionProfile, TelegramSettings, default_response_ux_settings
 from codex_telegram_gateway.execution_policy import ExecutionPolicyResolver, PolicyOverride
 from codex_telegram_gateway.models import ExecutionPolicyRecord
 
@@ -85,6 +85,7 @@ def make_config() -> AppConfig:
         ),
         break_glass_ttl_seconds=1800,
         telegram=TelegramSettings(True, True, True),
+        response_ux=default_response_ux_settings(),
     )
 
 
