@@ -14,6 +14,7 @@ Telegram-обвязка для `Codex CLI`, где каждый Telegram chat/to
 - базовые inline-кнопки: `Status`, `Where`, `Reset Session`.
 - настраиваемый `default workspace` для непривязанных чатов.
 - поддержка Telegram forum topics: `/use` в forum-группе создаёт новую тему с отдельной Codex-сессией.
+- настраиваемый UX-слой ответа Telegram: private chats используют reaction/typing/progress/stream, группы и topics по умолчанию получают только финальный ответ.
 
 ## Почему Python
 
@@ -46,6 +47,27 @@ Telegram-обвязка для `Codex CLI`, где каждый Telegram chat/to
 8. После завершения `session_id` сохраняется обратно в SQLite.
 
 Это даёт изоляцию контекста без переключения директорий внутри общей сессии.
+
+## Telegram Response UX
+
+Поведение ответа теперь управляется отдельным `response_ux` policy block в `config.toml`.
+
+- `private_chat` по умолчанию: `reaction = true`, `typing = true`, `progress = true`, `stream = true`
+- `group_chat` по умолчанию: `reaction = true`, `typing = true`, `progress = false`, `stream = false`
+
+Это означает:
+
+- private chat получает ранний reaction, heartbeat `sendChatAction(typing)`, агрегированные progress updates и streaming/fallback delivery;
+- group chat и forum topic не получают промежуточный tool-noise или stream draft и видят только финальный ответ;
+- если Telegram не поддерживает reactions, chat actions или edits в конкретном чате, gateway автоматически снижает capability и переключается на безопасный fallback path;
+- ошибки UX helpers не должны блокировать финальную доставку ответа.
+
+Ограничения и fallback:
+
+- `stream = true` требует `progress = true`; несовместимая конфигурация отклоняется на этапе `load_config()`;
+- Telegram edit failures переводят private streaming path на отправку нового сообщения;
+- длинные ответы автоматически режутся на безопасные chunks по `telegram_message_chunk`;
+- rate-limit / unsupported-method ответы Telegram учитываются transport layer и используются для capability downgrade.
 
 ## Безопасность
 
@@ -180,6 +202,8 @@ CONTEXT7_API_KEY=... # optional, for .codex/config.toml Context7 MCP
 - `allowed_roots`
 - `workspace_defaults`
 - `default_workspace_name`
+- `response_ux.private_chat`
+- `response_ux.group_chat`
 
 Проверьте соответствие путей выбранному сервисному пользователю:
 
@@ -300,6 +324,16 @@ openclaw = "/absolute/path/to/openclaw"
 - `break_glass_active`, `break_glass_expired`
 - `preflight_failed`
 - `command_rule_violation`
+- `response_ux_bootstrapped`
+- `inbound_message_accepted`, `response_ux_lifecycle_start`, `response_ux_lifecycle_stop`
+- `typing_heartbeat_started`, `typing_heartbeat_stopped`, `typing_heartbeat_skipped`
+- `reaction_sent`, `reaction_failed`
+- `progress_aggregation_decision`, `progress_event_dropped`
+- `progress_update_sent`, `progress_update_skipped`, `progress_fallback_disabled`
+- `stream_started`, `stream_chunk_sent`, `stream_chunk_skipped`, `stream_fallback_used`
+- `message_length_split`
+- `final_response_path_selected`, `final_response_sent`, `final_response_failed`, `final_fallback_chain_selected`
+- `transport_capability_downgraded`, `typing_started_failed`, `edit_failed`
 
 Как их интерпретировать:
 
@@ -308,6 +342,8 @@ openclaw = "/absolute/path/to/openclaw"
 - `preflight_failed` значит, что workspace не прошёл filesystem safety/readiness checks.
 - `command_rule_violation` значит, что gateway отклонил prompt до запуска `codex exec`.
 - `break_glass_expired` значит, что временный аварийный профиль снят и effective policy вернулась к менее привилегированному baseline.
+- `progress_fallback_disabled` или `stream_fallback_used` значит, что UX helper path деградировал, но gateway продолжил доставку final response.
+- `final_response_failed` значит, что основной finalization path упал и бот перешёл на аварийную доставку через plain `sendMessage`.
 
 ## Тесты
 

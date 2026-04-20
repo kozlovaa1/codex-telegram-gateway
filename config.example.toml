@@ -117,6 +117,7 @@ allow_topics = true
 
 [response_ux.private_chat]
 # Private chats can use the richer acknowledgement path.
+# `stream = true` requires `progress = true`.
 reaction = true
 typing = true
 progress = true
@@ -124,6 +125,7 @@ stream = true
 
 [response_ux.group_chat]
 # Groups and forum topics stay on the conservative final-response path.
+# Keep `progress` and `stream` disabled unless you explicitly want intermediate delivery there.
 reaction = true
 typing = true
 progress = false

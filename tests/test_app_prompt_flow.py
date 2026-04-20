@@ -83,6 +83,37 @@ class FakeTelegram:
         self.typing_calls.append((chat_id, thread_id))
         return True
 
+    async def send_or_edit_message(
+        self,
+        *,
+        chat_id: int,
+        text: str,
+        thread_id: int | None = None,
+        reply_to_message_id: int | None = None,
+        reply_markup=None,
+        edit_message_id: int | None = None,
+    ):
+        if edit_message_id is not None and not self.fail_edits:
+            edit = await self.edit_message(chat_id, edit_message_id, text, reply_markup=reply_markup)
+            mode = "edit"
+            message = edit
+        else:
+            message = await self.send_message(
+                chat_id,
+                text,
+                thread_id=thread_id,
+                reply_to_message_id=reply_to_message_id,
+                reply_markup=reply_markup,
+            )
+            mode = "send"
+
+        class Result:
+            def __init__(self, mode: str, message: dict) -> None:
+                self.mode = mode
+                self.message = message
+
+        return Result(mode, message)
+
 
 class FakeSessions:
     def __init__(self, *, result: CodexRunResult | None = None, error: Exception | None = None, events: list[dict] | None = None) -> None:
@@ -262,6 +293,21 @@ class AppPromptFlowTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(telegram.messages), 2)
             self.assertEqual(telegram.messages[0]["text"], "[demo] running\n\npartial")
             self.assertEqual(telegram.messages[1]["text"], "[demo] done in 0.1s\nSession: session-1\n\ndone")
+
+    async def test_handle_prompt_group_chat_sends_only_final_message(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = make_config(tmp)
+            store = WorkspaceStore(config.sqlite_path, config.workspace_defaults, None, "workspace-write", "never")
+            store.initialize()
+            telegram = FakeTelegram()
+            sessions = FakeSessions(events=[RunEvent(kind="text_delta", text="partial", raw_type="message.delta")])
+            app = GatewayApp(config, store, sessions, telegram, logging.getLogger("test"))
+
+            await app._handle_prompt(ChatScope(chat_id=-100, thread_id=55), 7, -100, 55, 42, "hello", chat_type="supergroup")
+
+            self.assertEqual(len(telegram.messages), 1)
+            self.assertIn("[demo] done in 0.1s", telegram.messages[0]["text"])
+            self.assertEqual(telegram.reactions, [( -100, 42, "👍")])
 
 
 if __name__ == "__main__":

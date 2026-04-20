@@ -289,8 +289,25 @@ class ResponseUxCoordinator:
             await self._edit_or_fallback(lifecycle, f"[{context.workspace_name}] internal error")
             await self._cleanup(context.identity.key, reason="internal_error")
             return
-        await self._finalize(lifecycle, result)
-        await self._cleanup(context.identity.key, reason="completed" if result.ok else "failed")
+        cleanup_reason = "completed" if result.ok else "failed"
+        try:
+            await self._finalize(lifecycle, result)
+        except Exception:
+            cleanup_reason = "finalization_failed"
+            self.logger.exception("final_response_failed")
+            fallback_text = result.final_text or "(empty response)"
+            await self.telegram.send_message(
+                lifecycle.context.target.chat_id,
+                self._truncate_for_telegram(f"[{lifecycle.context.workspace_name}] {fallback_text}"),
+                lifecycle.context.target.thread_id,
+            )
+            log_extra(
+                self.logger,
+                "final_fallback_chain_selected",
+                request_id=context.identity.key,
+                fallback="send_message",
+            )
+        await self._cleanup(context.identity.key, reason=cleanup_reason)
 
     async def _send_initial_ack(self, lifecycle: ResponseUxLifecycle) -> None:
         context = lifecycle.context
@@ -382,7 +399,27 @@ class ResponseUxCoordinator:
             f"Session: {result.session_id or 'n/a'}\n\n{final_text}"
         )
         chunks = self._split_for_telegram(summary)
-        await self._edit_or_fallback(lifecycle, chunks[0], reply_markup=INLINE_KEYBOARD)
+        if lifecycle.context.policy.final_only:
+            log_extra(
+                self.logger,
+                "final_response_path_selected",
+                request_id=lifecycle.context.identity.key,
+                path="final_only",
+            )
+            await self.telegram.send_message(
+                lifecycle.context.target.chat_id,
+                chunks[0],
+                lifecycle.context.target.thread_id,
+                reply_to_message_id=lifecycle.context.target.reply_to_message_id,
+            )
+        else:
+            log_extra(
+                self.logger,
+                "final_response_path_selected",
+                request_id=lifecycle.context.identity.key,
+                path="progress_or_stream",
+            )
+            await self._edit_or_fallback(lifecycle, chunks[0], reply_markup=INLINE_KEYBOARD)
         for extra in chunks[1:]:
             await self.telegram.send_message(
                 lifecycle.context.target.chat_id,
